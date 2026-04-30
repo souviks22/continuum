@@ -246,23 +246,19 @@ func TestWAL_EmptyPayloadBehavior(t *testing.T) {
 	wal, err := NewWAL(path)
 	require.NoError(t, err)
 
-	// Append empty payload
 	err = wal.Append([]byte{})
 	require.NoError(t, err)
 
 	require.NoError(t, wal.Close())
 
-	// Recover
 	var recovered [][]byte
 	err = Recover(path, func(_ uint64, record []byte) error {
 		recovered = append(recovered, record)
 		return nil
 	})
 
-	// Decide expected behavior (see below)
 	require.NoError(t, err)
 
-	// Option A (recommended): empty payload is valid
 	require.Len(t, recovered, 1)
 	require.Equal(t, []byte{}, recovered[0])
 }
