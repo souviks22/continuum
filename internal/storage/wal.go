@@ -8,25 +8,32 @@ import (
 	"io"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-const (
-	Magic = 0xCAFEBABE
-)
+const Magic = 0xCAFEBABE
 
 var (
 	ErrCorruptRecord = errors.New("corrupt WAL record")
+	ErrWALClosed     = errors.New("wal is closed")
+	table            = crc32.MakeTable(crc32.IEEE)
 )
 
 type WAL struct {
 	file      *os.File
 	bufWriter *bufio.Writer
 	writeCh   chan *WriteRequest
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	nextLSN   uint64
+	closeCh   chan struct{}
+
+	maxBatchSize int
+	maxDelay     time.Duration
+
+	timer   *time.Timer
+	nextLSN uint64
+
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
 type WriteRequest struct {
@@ -35,6 +42,15 @@ type WriteRequest struct {
 }
 
 func NewWAL(filePath string) (*WAL, error) {
+	var lastLSN uint64
+
+	if err := Recover(filePath, func(lsn uint64, _ []byte) error {
+		lastLSN = lsn
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 
 	if err != nil {
@@ -42,19 +58,31 @@ func NewWAL(filePath string) (*WAL, error) {
 	}
 
 	w := &WAL{
-		file:      f,
-		bufWriter: bufio.NewWriter(f),
-		writeCh:   make(chan *WriteRequest, 1024),
-		stopCh:    make(chan struct{}),
-		nextLSN:   0,
+		file:         f,
+		bufWriter:    bufio.NewWriterSize(f, 1<<20),
+		writeCh:      make(chan *WriteRequest, 4096),
+		closeCh:      make(chan struct{}),
+		maxBatchSize: 1024,
+		maxDelay:     5 * time.Millisecond,
+		timer:        time.NewTimer(time.Hour),
+		nextLSN:      lastLSN,
 	}
 
 	w.wg.Add(1)
+	w.timer.Stop()
 	go w.writerLoop()
+
 	return w, nil
 }
 
 func (w *WAL) Append(payload []byte) error {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return ErrWALClosed
+	}
+	w.mu.Unlock()
+
 	req := &WriteRequest{
 		payload:    payload,
 		responseCh: make(chan error, 1),
@@ -67,67 +95,68 @@ func (w *WAL) Append(payload []byte) error {
 func (w *WAL) writerLoop() {
 	defer w.wg.Done()
 
-	const maxBatchSize = 1024
-	const maxDelay = 5 * time.Millisecond
-
+	batch := make([]*WriteRequest, 0, w.maxBatchSize)
 	for {
-		var batch []*WriteRequest
-
 		select {
 		case req := <-w.writeCh:
 			batch = append(batch, req)
-		case <-w.stopCh:
+		case <-w.closeCh:
+			w.drainAndExit()
 			return
 		}
 
-		timeout := time.After(maxDelay)
+		if !w.timer.Stop() {
+			select {
+			case <-w.timer.C:
+			default:
+			}
+		}
+		w.timer.Reset(w.maxDelay)
 
 	collect:
-		for len(batch) < maxBatchSize {
+		for len(batch) < w.maxBatchSize {
 			select {
 			case req := <-w.writeCh:
 				batch = append(batch, req)
-			case <-timeout:
+
+			case <-w.timer.C:
 				break collect
-			case <-w.stopCh:
+
+			case <-w.closeCh:
+				err := w.writeBatch(batch)
+				w.syncBatch(batch, err)
+				w.drainAndExit()
 				return
 			}
 		}
 
 		err := w.writeBatch(batch)
-
-		if err == nil {
-			w.bufWriter.Flush()
-			err = w.file.Sync()
-		}
-
-		for _, req := range batch {
-			req.responseCh <- err
-		}
+		w.syncBatch(batch, err)
+		batch = batch[:0]
 	}
 }
 
 func (w *WAL) writeBatch(batch []*WriteRequest) error {
+	var header [20]byte
+	var lsnBuf [8]byte
+
 	for _, req := range batch {
 		payload := req.payload
 		length := uint32(len(payload))
 
-		lsn := atomic.AddUint64(&w.nextLSN, 1)
-		lsnBuf := make([]byte, 8)
-		binary.BigEndian.PutUint64(lsnBuf, lsn)
+		w.nextLSN++
+		lsn := w.nextLSN
+		binary.BigEndian.PutUint64(lsnBuf[:], lsn)
 
-		crc := crc32.NewIEEE()
-		crc.Write(lsnBuf)
-		crc.Write(payload)
-		checksum := crc.Sum32()
+		crc := crc32.Update(0, table, lsnBuf[:])
+		crc = crc32.Update(crc, table, payload)
 
-		header := make([]byte, 20)
 		binary.BigEndian.PutUint32(header[0:4], Magic)
 		binary.BigEndian.PutUint32(header[4:8], length)
-		binary.BigEndian.PutUint32(header[8:12], checksum)
+		binary.BigEndian.PutUint32(header[8:12], crc)
 		binary.BigEndian.PutUint64(header[12:20], lsn)
 
-		if _, err := w.bufWriter.Write(header); err != nil {
+		if _, err := w.bufWriter.Write(header[:]); err != nil {
 			return err
 		}
 		if _, err := w.bufWriter.Write(payload); err != nil {
@@ -137,15 +166,62 @@ func (w *WAL) writeBatch(batch []*WriteRequest) error {
 	return nil
 }
 
+func (w *WAL) syncBatch(batch []*WriteRequest, err error) {
+	if err == nil {
+		if e := w.bufWriter.Flush(); e != nil {
+			err = e
+		}
+	}
+	if err == nil {
+		if e := w.file.Sync(); e != nil {
+			err = e
+		}
+	}
+
+	for _, req := range batch {
+		req.responseCh <- err
+	}
+}
+
+func (w *WAL) drainAndExit() {
+	batch := make([]*WriteRequest, 0, w.maxBatchSize)
+	for {
+		select {
+		case req := <-w.writeCh:
+			batch = append(batch, req)
+
+			if len(batch) >= w.maxBatchSize {
+				err := w.writeBatch(batch)
+				w.syncBatch(batch, err)
+				batch = batch[:0]
+			}
+
+		default:
+			if len(batch) > 0 {
+				err := w.writeBatch(batch)
+				w.syncBatch(batch, err)
+			}
+			return
+		}
+	}
+}
+
 func (w *WAL) Close() error {
-	close(w.stopCh)
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
+	close(w.closeCh)
+	w.mu.Unlock()
+
 	w.wg.Wait()
-	w.bufWriter.Flush()
 	return w.file.Close()
 }
 
 func Recover(walFilePath string, apply func(uint64, []byte) error) error {
-	f, err := os.Open(walFilePath)
+	f, err := os.OpenFile(walFilePath, os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -177,9 +253,9 @@ func Recover(walFilePath string, apply func(uint64, []byte) error) error {
 }
 
 func readRecord(reader *bufio.Reader) (uint64, []byte, error) {
-	header := make([]byte, 20)
+	var header [20]byte
 
-	if _, err := io.ReadFull(reader, header); err != nil {
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		return 0, nil, err
 	}
 
@@ -189,25 +265,24 @@ func readRecord(reader *bufio.Reader) (uint64, []byte, error) {
 	}
 
 	length := binary.BigEndian.Uint32(header[4:8])
-	if length == 0 || length > (1<<20) {
+	if length > (1<<20) {
 		return 0, nil, ErrCorruptRecord
 	}
 
 	checksum := binary.BigEndian.Uint32(header[8:12])
 	lsn := binary.BigEndian.Uint64(header[12:20])
-	lsnBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(lsnBuf, lsn)
+	var lsnBuf [8]byte
+	binary.BigEndian.PutUint64(lsnBuf[:], lsn)
 
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(reader, payload); err != nil {
 		return 0, nil, err
 	}
 
-	crc := crc32.NewIEEE()
-	crc.Write(lsnBuf)
-	crc.Write(payload)
+	crc := crc32.Update(0, table, lsnBuf[:])
+	crc = crc32.Update(crc, table, payload)
 
-	if crc.Sum32() != checksum {
+	if crc != checksum {
 		return 0, nil, ErrCorruptRecord
 	}
 

@@ -2,10 +2,12 @@ package storage
 
 import (
 	"crypto/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -36,8 +38,8 @@ func TestWAL_ConcurrentIntegrity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.log")
 	wal, _ := NewWAL(path)
 
-	n, lsn := uint64(1000), uint64(0)
-	wg := &sync.WaitGroup{}
+	var n uint64 = 1000
+	var wg sync.WaitGroup
 
 	for range n {
 		wg.Add(1)
@@ -50,9 +52,10 @@ func TestWAL_ConcurrentIntegrity(t *testing.T) {
 	wg.Wait()
 	wal.Close()
 
-	Recover(path, func(nextLsn uint64, _ []byte) error {
-		require.Greater(t, nextLsn, lsn, "LSN must be strictly increasing")
-		lsn = nextLsn
+	var lsn uint64
+	Recover(path, func(nextLSN uint64, _ []byte) error {
+		require.Greater(t, nextLSN, lsn, "LSN must be strictly increasing")
+		lsn = nextLSN
 		return nil
 	})
 
@@ -123,4 +126,143 @@ func TestWAL_LargePayload(t *testing.T) {
 	})
 
 	require.Equal(t, large, recovered[0])
+}
+
+func TestWAL_AppendAfterClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+
+	require.NoError(t, wal.Close())
+
+	err = wal.Append([]byte("should-fail"))
+	require.ErrorIs(t, err, ErrWALClosed)
+}
+
+func TestWAL_LSNContinuityAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+
+	initial := []string{"A", "B", "C"}
+	for _, v := range initial {
+		require.NoError(t, wal.Append([]byte(v)))
+	}
+	require.NoError(t, wal.Close())
+
+	wal, err = NewWAL(path)
+	require.NoError(t, err)
+
+	next := []string{"D", "E"}
+	for _, v := range next {
+		require.NoError(t, wal.Append([]byte(v)))
+	}
+	require.NoError(t, wal.Close())
+
+	var lastLSN uint64 = 0
+	var recovered []string
+
+	err = Recover(path, func(lsn uint64, record []byte) error {
+		require.Greater(t, lsn, lastLSN, "LSN must strictly increase across restart")
+		lastLSN = lsn
+		recovered = append(recovered, string(record))
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"A", "B", "C", "D", "E"}, recovered)
+}
+
+func TestWAL_CloseDuringConcurrentAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+
+	var (
+		total = 1000
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		ok    = make(map[string]struct{})
+	)
+
+	for i := range total {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			data := []byte(fmt.Sprintf("rec-%d", i))
+			err := wal.Append(data)
+
+			if err == nil {
+				mu.Lock()
+				ok[string(data)] = struct{}{}
+				mu.Unlock()
+			}
+		}(i)
+	}
+
+	require.NoError(t, wal.Close())
+
+	wg.Wait()
+
+	recovered := make(map[string]struct{})
+	err = Recover(path, func(_ uint64, record []byte) error {
+		recovered[string(record)] = struct{}{}
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, ok, recovered)
+}
+
+func TestWAL_FlushOnTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+
+	require.NoError(t, wal.Append([]byte("delayed-write")))
+
+	time.Sleep(10 * time.Millisecond)
+
+	require.NoError(t, wal.Close())
+
+	var recovered []string
+	err = Recover(path, func(_ uint64, record []byte) error {
+		recovered = append(recovered, string(record))
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"delayed-write"}, recovered)
+}
+
+func TestWAL_EmptyPayloadBehavior(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+
+	// Append empty payload
+	err = wal.Append([]byte{})
+	require.NoError(t, err)
+
+	require.NoError(t, wal.Close())
+
+	// Recover
+	var recovered [][]byte
+	err = Recover(path, func(_ uint64, record []byte) error {
+		recovered = append(recovered, record)
+		return nil
+	})
+
+	// Decide expected behavior (see below)
+	require.NoError(t, err)
+
+	// Option A (recommended): empty payload is valid
+	require.Len(t, recovered, 1)
+	require.Equal(t, []byte{}, recovered[0])
 }
