@@ -38,7 +38,12 @@ type WAL struct {
 
 type WriteRequest struct {
 	payload    []byte
-	responseCh chan error
+	responseCh chan *WriteResponse
+}
+
+type WriteResponse struct {
+	lsn uint64
+	err error
 }
 
 func NewWAL(filePath string) (*WAL, error) {
@@ -75,21 +80,22 @@ func NewWAL(filePath string) (*WAL, error) {
 	return w, nil
 }
 
-func (w *WAL) Append(payload []byte) error {
+func (w *WAL) Append(payload []byte) (uint64, error) {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		return ErrWALClosed
+		return 0, ErrWALClosed
 	}
 	w.mu.Unlock()
 
 	req := &WriteRequest{
 		payload:    payload,
-		responseCh: make(chan error, 1),
+		responseCh: make(chan *WriteResponse, 1),
 	}
 
 	w.writeCh <- req
-	return <-req.responseCh
+	response := <-req.responseCh
+	return response.lsn, response.err
 }
 
 func (w *WAL) writerLoop() {
@@ -178,8 +184,11 @@ func (w *WAL) syncBatch(batch []*WriteRequest, err error) {
 		}
 	}
 
-	for _, req := range batch {
-		req.responseCh <- err
+	for i, req := range batch {
+		req.responseCh <- &WriteResponse{
+			lsn: w.nextLSN - uint64(len(batch)-i-1),
+			err: err,
+		}
 	}
 }
 
@@ -265,7 +274,7 @@ func readRecord(reader *bufio.Reader) (uint64, []byte, error) {
 	}
 
 	length := binary.BigEndian.Uint32(header[4:8])
-	if length > (1<<20) {
+	if length > (1 << 20) {
 		return 0, nil, ErrCorruptRecord
 	}
 

@@ -19,7 +19,8 @@ func TestWAL_BasicWriteRecover(t *testing.T) {
 
 	inputs := []string{"A", "B", "C"}
 	for _, in := range inputs {
-		require.NoError(t, wal.Append([]byte(in)))
+		_, err := wal.Append([]byte(in))
+		require.NoError(t, err)
 	}
 
 	require.NoError(t, wal.Close())
@@ -86,7 +87,7 @@ func TestWAL_CorruptionOrPartialWriteRecovery(t *testing.T) {
 
 	inputs = []string{"F", "G", "H"}
 	for _, in := range inputs {
-		err := wal.Append([]byte(in))
+		_, err := wal.Append([]byte(in))
 		require.NoError(t, err)
 	}
 
@@ -136,7 +137,7 @@ func TestWAL_AppendAfterClose(t *testing.T) {
 
 	require.NoError(t, wal.Close())
 
-	err = wal.Append([]byte("should-fail"))
+	_, err = wal.Append([]byte("should-fail"))
 	require.ErrorIs(t, err, ErrWALClosed)
 }
 
@@ -148,7 +149,8 @@ func TestWAL_LSNContinuityAcrossRestart(t *testing.T) {
 
 	initial := []string{"A", "B", "C"}
 	for _, v := range initial {
-		require.NoError(t, wal.Append([]byte(v)))
+		_, err := wal.Append([]byte(v))
+		require.NoError(t, err)
 	}
 	require.NoError(t, wal.Close())
 
@@ -157,7 +159,8 @@ func TestWAL_LSNContinuityAcrossRestart(t *testing.T) {
 
 	next := []string{"D", "E"}
 	for _, v := range next {
-		require.NoError(t, wal.Append([]byte(v)))
+		_, err := wal.Append([]byte(v))
+		require.NoError(t, err)
 	}
 	require.NoError(t, wal.Close())
 
@@ -194,7 +197,7 @@ func TestWAL_CloseDuringConcurrentAppends(t *testing.T) {
 			defer wg.Done()
 
 			data := []byte(fmt.Sprintf("rec-%d", i))
-			err := wal.Append(data)
+			_, err := wal.Append(data)
 
 			if err == nil {
 				mu.Lock()
@@ -224,7 +227,8 @@ func TestWAL_FlushOnTimeout(t *testing.T) {
 	wal, err := NewWAL(path)
 	require.NoError(t, err)
 
-	require.NoError(t, wal.Append([]byte("delayed-write")))
+	_, err = wal.Append([]byte("delayed-write"))
+	require.NoError(t, err)
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -246,7 +250,7 @@ func TestWAL_EmptyPayloadBehavior(t *testing.T) {
 	wal, err := NewWAL(path)
 	require.NoError(t, err)
 
-	err = wal.Append([]byte{})
+	_, err = wal.Append([]byte{})
 	require.NoError(t, err)
 
 	require.NoError(t, wal.Close())
