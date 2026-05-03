@@ -51,6 +51,51 @@ WAL works ahead of memory to store permanent data. Even if writes fail midway, t
 
 > WAL does not care if a corruption occurs at write time, it simply keeps adding bytes sequentially. At recovery time, once a corruption is detected via checksum mismatch, it keeps skipping bytes until a valid record arrives.
 
+## Local Storage: MemStore
+
+WAL guarantees durability, but it is not designed for serving reads efficiently. Replaying the log for every GET would be prohibitively slow. This is where the in-memory storage layer comes in.
+
+MemStore acts as the working state of the KV store, built on top of the WAL. It keeps the latest version of all keys in memory, allowing fast reads while relying on WAL for durability.
+
+WAL solves persistence, but introduces a new problem:
+
+* Data is stored sequentially, not by key
+* Reads require scanning the log
+* No direct lookup capability
+
+MemStore bridges this gap:
+
+> WAL → ensures data is never lost
+> MemStore → ensures data is instantly accessible
+
+---
+
+## Write Path
+
+Every write follows a strict order to guarantee correctness:
+
+```text
+Client → WAL → MemStore → Acknowledge
+```
+
+* No acknowledged write is ever lost
+* Memory and disk stay consistent
+* Recovery is deterministic
+
+---
+
+## Read Path
+
+Reads are served directly from memory:
+
+```text
+Client → MemStore → Response
+```
+
+* Lookup is O(1) using hashmap
+* Tombstoned (deleted) keys are treated as non-existent
+* No disk access required in steady state
+
 ----
 
 Documentation is in progress
