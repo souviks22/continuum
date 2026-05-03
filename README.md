@@ -63,12 +63,8 @@ WAL solves persistence, but introduces a new problem:
 * Reads require scanning the log
 * No direct lookup capability
 
-MemStore bridges this gap:
+MemStore bridges this gap.
 
-> WAL → ensures data is never lost
-> MemStore → ensures data is instantly accessible
-
----
 
 ### Write Path
 
@@ -82,7 +78,6 @@ Client → WAL → MemStore → Acknowledge
 * Memory and disk stay consistent
 * Recovery is deterministic
 
----
 
 ### Read Path
 
