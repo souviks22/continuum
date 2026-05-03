@@ -51,7 +51,7 @@ WAL works ahead of memory to store permanent data. Even if writes fail midway, t
 
 > WAL does not care if a corruption occurs at write time, it simply keeps adding bytes sequentially. At recovery time, once a corruption is detected via checksum mismatch, it keeps skipping bytes until a valid record arrives.
 
-## Local Storage: MemStore
+## Local Storage: In-Memory Hashmap (MemStore)
 
 WAL guarantees durability, but it is not designed for serving reads efficiently. Replaying the log for every GET would be prohibitively slow. This is where the in-memory storage layer comes in.
 
@@ -70,7 +70,7 @@ MemStore bridges this gap:
 
 ---
 
-## Write Path
+### Write Path
 
 Every write follows a strict order to guarantee correctness:
 
@@ -84,7 +84,7 @@ Client → WAL → MemStore → Acknowledge
 
 ---
 
-## Read Path
+### Read Path
 
 Reads are served directly from memory:
 
@@ -96,6 +96,7 @@ Client → MemStore → Response
 * Tombstoned (deleted) keys are treated as non-existent
 * No disk access required in steady state
 
+> MemStore must be combined with LSM tree in future to support data that does not entirely fit in memory. 
 ----
 
 Documentation is in progress
