@@ -134,6 +134,39 @@ class WriteAheadLog:
     def fsync(self) -> None:
         os.fsync(self._file.fileno())
 
+    def truncate_to(self, count: int) -> None:
+        """Discard all records from index `count` onward, keeping only
+        records [0, count). Added for Raft's log-matching property
+        (Step 2.2): when a follower's log conflicts with the leader's at
+        some index, Raft requires deleting the conflicting entry and
+        everything after it before appending the leader's entries --
+        something a purely-append-only log can't do. Records are
+        length-prefixed and checksummed, so the byte offset of the
+        count-th record boundary is unambiguous; this walks to it and
+        calls the OS truncate() there. Deliberately does NOT auto-fsync
+        (matches append()'s durability boundary) -- callers doing a
+        truncate-then-append-several-entries sequence (exactly what log
+        conflict resolution does) should fsync once after the whole
+        batch, not once per record."""
+        if count < 0 or count > self._next_index:
+            raise ValueError(
+                f"count must be in [0, {self._next_index}], got {count}"
+            )
+        if count == self._next_index:
+            return  # nothing to discard
+        self._file.seek(0)
+        offset = 0
+        for _ in range(count):
+            header = self._file.read(_HEADER.size)
+            length, _crc = _HEADER.unpack(header)
+            self._file.seek(length, 1)
+            offset += _HEADER.size + length
+        self._file.truncate(offset)
+        self._file.flush()
+        self._next_index = count
+        self._valid_end_offset = offset
+        self._file.seek(offset)
+
     # -- reads -----------------------------------------------------------
 
     def read_all(self) -> list[bytes]:
