@@ -1,23 +1,17 @@
 """Raft leader election and log replication.
 
-Step 2.1 scope (node states, randomized election timeouts, RequestVote,
-durable term/vote persistence) plus Step 2.2: AppendEntries now carries
-real entries, log matching/conflict resolution happens via RaftLog
-(log.py), commit index advances on majority replication with Raft's
-current-term restriction (an entry from a *previous* term is only ever
-committed indirectly, by a later current-term entry at a higher index
-being committed -- never counted as committed purely by matching a
-majority itself, which is the classic "figure 8" safety hazard Raft's
-proof depends on avoiding), and committed entries are applied via an
-injected `apply_fn` callback.
-
-Deliberately NOT in scope yet: snapshotting/InstallSnapshot for a
-follower that has fallen far enough behind that the leader has already
-compacted away the entries it needs (a real gap for now -- a very
-lagging follower simply can't catch up until that's built), and wiring
-`apply_fn` to Phase 1's StorageEngine in a way that also handles Raft-log
-compaction sharing a durability story with StorageEngine's own
-snapshotting. Both are follow-up steps, not accidents.
+Step 2.1 (node states, randomized election timeouts, RequestVote,
+durable term/vote persistence), Step 2.2 (real AppendEntries, log
+matching/conflict resolution via RaftLog, commit index advancement with
+Raft's current-term restriction, committed entries applied via an
+injected `apply_fn`), and Step 2.3: InstallSnapshot for followers who've
+fallen behind whatever the leader has already compacted away, plus real
+wiring to Phase 1's StateMachine/SnapshotStore so this is an actual
+replicated KV store rather than an inert log. `take_snapshot()`
+snapshots the state machine and compacts the log to match; a lagging
+follower's `_replicate_to_peer` automatically falls back to
+InstallSnapshot instead of AppendEntries once its nextIndex has fallen
+at or before the leader's compaction boundary.
 """
 
 from __future__ import annotations
@@ -26,10 +20,12 @@ import random
 from enum import Enum, auto
 from typing import Any, Callable, Optional
 
-from continuum.raft.log import LogEntry, RaftLog
+from continuum.raft.log import LogCompactedError, LogEntry, RaftLog
 from continuum.raft.persistent_state import RaftPersistentState
 from continuum.rpc.endpoint import RpcEndpoint
 from continuum.sim.scheduler import EventHandle, EventScheduler
+from continuum.storage.snapshot import SnapshotStore
+from continuum.storage.statemachine import Operation, StateMachine
 from continuum.storage.wal import WriteAheadLog
 
 
@@ -53,6 +49,9 @@ class RaftNode:
         heartbeat_interval: int = 50,
         rpc_timeout: int = 100,
         apply_fn: Optional[Callable[[dict[str, Any]], None]] = None,
+        state_machine: Optional[StateMachine] = None,
+        snapshot_store: Optional[SnapshotStore] = None,
+        snapshot_threshold: Optional[int] = None,
     ) -> None:
         self.node_id = node_id
         self.peers = list(peers)
@@ -64,6 +63,9 @@ class RaftNode:
         self._heartbeat_interval = heartbeat_interval
         self._rpc_timeout = rpc_timeout
         self._apply_fn = apply_fn
+        self._state_machine = state_machine
+        self._snapshot_store = snapshot_store
+        self._snapshot_threshold = snapshot_threshold
 
         self.state = NodeState.FOLLOWER
         self._votes_received: set[str] = set()
@@ -78,8 +80,21 @@ class RaftNode:
         self._next_index: dict[str, int] = {}
         self._match_index: dict[str, int] = {}
 
+        # If a snapshot already exists on disk (from a prior run), load
+        # it before anything else -- last_applied jumps straight to what
+        # the snapshot covers, and only entries after that get replayed
+        # by the normal commit/apply path below.
+        if self._state_machine is not None and self._snapshot_store is not None:
+            snapshot = self._snapshot_store.read()
+            if snapshot is not None:
+                state, last_index = snapshot
+                self._state_machine.load_state(state)
+                self.last_applied = last_index
+                self.commit_index = last_index
+
         rpc.register_method("RequestVote", self._on_request_vote)
         rpc.register_method("AppendEntries", self._on_append_entries)
+        rpc.register_method("InstallSnapshot", self._on_install_snapshot)
 
     @property
     def last_log_index(self) -> int:
@@ -251,9 +266,21 @@ class RaftNode:
     def _replicate_to_peer(self, peer: str) -> None:
         term = self.current_term
         next_idx = self._next_index.get(peer, self.log.last_index + 1)
+        if next_idx <= self.log.last_included_index:
+            self._send_install_snapshot(peer, term)
+            return
         prev_log_index = next_idx - 1
         prev_log_term = self.log.term_at(prev_log_index)
-        entries = self.log.entries_from(next_idx)
+        try:
+            entries = self.log.entries_from(next_idx)
+        except LogCompactedError:
+            # Can only happen if compaction raced with this call; not
+            # possible in this single-threaded, event-driven model today
+            # (take_snapshot() is never called mid-replication), but
+            # falling back rather than crashing keeps this correct even
+            # if that invariant changes later.
+            self._send_install_snapshot(peer, term)
+            return
         body = {
             "term": term,
             "leader_id": self.node_id,
@@ -324,8 +351,85 @@ class RaftNode:
         while self.last_applied < self.commit_index:
             self.last_applied += 1
             entry = self.log.get(self.last_applied)
-            if entry is not None and self._apply_fn is not None:
+            if entry is None:
+                continue
+            if self._apply_fn is not None:
                 self._apply_fn(entry.command)
+            if self._state_machine is not None:
+                self._apply_to_state_machine(entry.command)
+        if (
+            self._snapshot_threshold is not None
+            and self._snapshot_store is not None
+            and self._state_machine is not None
+            and self.last_applied - self.log.last_included_index >= self._snapshot_threshold
+        ):
+            self.take_snapshot()
+
+    def _apply_to_state_machine(self, command: dict[str, Any]) -> None:
+        operation = Operation(
+            index=self.last_applied,
+            op=command["op"],
+            key=command["key"],
+            value=command.get("value"),
+        )
+        self._state_machine.apply(operation)
+
+    def take_snapshot(self) -> None:
+        """Snapshot the state machine as of last_applied and compact the
+        log to match. Safe to call any time (a no-op if there's nothing
+        new since the last snapshot); also invoked automatically once
+        `snapshot_threshold` newly-applied entries have accumulated, if
+        one was configured."""
+        if self._state_machine is None or self._snapshot_store is None:
+            return
+        last_included_index = self.last_applied
+        if last_included_index <= self.log.last_included_index:
+            return
+        state = self._state_machine.snapshot_state()
+        self._snapshot_store.write(state, last_included_index)
+        self.log.compact(last_included_index)
+
+    # -- InstallSnapshot: leader side -----------------------------------
+
+    def _send_install_snapshot(self, peer: str, term: int) -> None:
+        if self._state_machine is None:
+            return  # nothing to send without a state machine to snapshot
+        last_included_index = self.log.last_included_index
+        body = {
+            "term": term,
+            "leader_id": self.node_id,
+            "last_included_index": last_included_index,
+            "last_included_term": self.log.last_included_term,
+            "state": self._state_machine.snapshot_state(),
+        }
+        self._rpc.call(
+            peer,
+            "InstallSnapshot",
+            body,
+            timeout=self._rpc_timeout,
+            on_reply=lambda reply, timed_out, term=term, peer=peer, lii=last_included_index: (
+                self._on_install_snapshot_reply(term, peer, lii, reply, timed_out)
+            ),
+        )
+
+    def _on_install_snapshot_reply(
+        self,
+        term: int,
+        peer: str,
+        last_included_index: int,
+        reply: Optional[dict[str, Any]],
+        timed_out: bool,
+    ) -> None:
+        if self.state != NodeState.LEADER or self.current_term != term:
+            return
+        if timed_out or reply is None:
+            return
+        if reply["term"] > self.current_term:
+            self._become_follower_for_new_term(reply["term"])
+            return
+        self._match_index[peer] = max(self._match_index.get(peer, -1), last_included_index)
+        self._next_index[peer] = last_included_index + 1
+        self._try_advance_commit_index()
 
     # -- RPC handlers -----------------------------------------------------
 
@@ -392,4 +496,27 @@ class RaftNode:
         while idx > 0 and self.log.term_at(idx - 1) == conflicting_term:
             idx -= 1
         return idx
+
+    def _on_install_snapshot(self, from_node: str, body: dict[str, Any]) -> dict[str, Any]:
+        term = body["term"]
+        if term > self.current_term:
+            self._become_follower_for_new_term(term)
+        if term < self.current_term:
+            return {"term": self.current_term}
+        self._recognize_current_leader()
+
+        last_included_index = body["last_included_index"]
+        last_included_term = body["last_included_term"]
+        if last_included_index <= self.log.last_included_index:
+            return {"term": self.current_term}  # stale/duplicate: we're already this current
+
+        if self._state_machine is not None:
+            self._state_machine.load_state(body["state"])
+        if self._snapshot_store is not None:
+            self._snapshot_store.write(body["state"], last_included_index)
+        self.log.install_snapshot(last_included_index, last_included_term)
+        self.commit_index = max(self.commit_index, last_included_index)
+        self.last_applied = last_included_index
+
+        return {"term": self.current_term}
      
