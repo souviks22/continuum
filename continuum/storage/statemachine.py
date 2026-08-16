@@ -44,6 +44,18 @@ class Operation:
         )
 
 
+def kv_query_fn(state_machine: "StateMachine", query: dict) -> dict:
+    """Generic query adapter for RaftNode's client-facing ClientQuery RPC
+    (Step 3.3): translates a {"op": "get", "key": ...} query into a KV
+    read. Kept as a free function, not a StateMachine method, since
+    RaftNode's query_fn hook is meant to be swappable per state-machine
+    type (see cluster.metadata.metadata_query_fn for the very different
+    query vocabulary the metadata group needs)."""
+    if query["op"] != "get":
+        raise ValueError(f"unsupported KV query op {query['op']!r}")
+    return {"value": state_machine.get(query["key"])}
+
+
 class StateMachine:
     def __init__(self) -> None:
         self._data: dict[str, str] = {}
@@ -56,6 +68,18 @@ class StateMachine:
             self._data.pop(operation.key, None)
         else:
             raise ValueError(f"unknown operation type {operation.op!r}")
+
+    def apply_command(self, index: int, command: dict) -> None:
+        """Adapter satisfying RaftNode's generic ReplicatedStateMachine
+        protocol (see raft/node.py): translates a raw committed-log
+        command dict into an Operation and applies it. Added in Step
+        3.2, when the metadata layer needed RaftNode to drive a state
+        machine that *isn't* a KV store -- RaftNode was generalized to
+        call `apply_command(index, command)` on whatever state machine
+        it's given, rather than being hardcoded to build an Operation
+        itself. This keeps the Raft/replication layer entirely ignorant
+        of what's actually being replicated."""
+        self.apply(Operation(index=index, op=command["op"], key=command["key"], value=command.get("value")))
 
     def get(self, key: str) -> Optional[str]:
         return self._data.get(key)

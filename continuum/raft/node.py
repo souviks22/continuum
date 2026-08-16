@@ -18,15 +18,31 @@ from __future__ import annotations
 
 import random
 from enum import Enum, auto
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Protocol
 
 from continuum.raft.log import LogCompactedError, LogEntry, RaftLog
 from continuum.raft.persistent_state import RaftPersistentState
 from continuum.rpc.endpoint import RpcEndpoint
 from continuum.sim.scheduler import EventHandle, EventScheduler
 from continuum.storage.snapshot import SnapshotStore
-from continuum.storage.statemachine import Operation, StateMachine
 from continuum.storage.wal import WriteAheadLog
+
+
+class ReplicatedStateMachine(Protocol):
+    """What RaftNode needs from a state machine, and nothing more.
+    Deliberately structural (no inheritance required) -- Step 3.2 needed
+    RaftNode to drive a metadata state machine as well as the KV
+    StateMachine from Phase 1, and the cleanest way to support that is
+    for RaftNode to not know or care what's actually being replicated at
+    all. Any object with these three methods can sit behind a Raft
+    group; the Raft/replication layer is completely generic over what
+    the commands mean."""
+
+    def apply_command(self, index: int, command: dict[str, Any]) -> None: ...
+
+    def snapshot_state(self) -> dict[str, Any]: ...
+
+    def load_state(self, state: dict[str, Any]) -> None: ...
 
 
 class NodeState(Enum):
@@ -49,9 +65,10 @@ class RaftNode:
         heartbeat_interval: int = 50,
         rpc_timeout: int = 100,
         apply_fn: Optional[Callable[[dict[str, Any]], None]] = None,
-        state_machine: Optional[StateMachine] = None,
+        state_machine: Optional[ReplicatedStateMachine] = None,
         snapshot_store: Optional[SnapshotStore] = None,
         snapshot_threshold: Optional[int] = None,
+        query_fn: Optional[Callable[[Any, dict[str, Any]], dict[str, Any]]] = None,
     ) -> None:
         self.node_id = node_id
         self.peers = list(peers)
@@ -66,6 +83,8 @@ class RaftNode:
         self._state_machine = state_machine
         self._snapshot_store = snapshot_store
         self._snapshot_threshold = snapshot_threshold
+        self._query_fn = query_fn
+        self._known_leader: Optional[str] = None
 
         self.state = NodeState.FOLLOWER
         self._votes_received: set[str] = set()
@@ -95,6 +114,8 @@ class RaftNode:
         rpc.register_method("RequestVote", self._on_request_vote)
         rpc.register_method("AppendEntries", self._on_append_entries)
         rpc.register_method("InstallSnapshot", self._on_install_snapshot)
+        rpc.register_method("ClientPropose", self._on_client_propose)
+        rpc.register_method("ClientQuery", self._on_client_query)
 
     @property
     def last_log_index(self) -> int:
@@ -154,12 +175,16 @@ class RaftNode:
         self._cancel_heartbeat_timer()
         self._reset_election_timer()
 
-    def _recognize_current_leader(self) -> None:
+    def _recognize_current_leader(self, leader_address: str) -> None:
         """Called on a valid heartbeat/AppendEntries from a leader in
         our current term (not a higher one). If we were a candidate,
         stop competing -- but don't touch votedFor; our vote this term
         (if any) is still valid history, just no longer relevant since
-        we've stopped contending ourselves."""
+        we've stopped contending ourselves.Also records
+        who we believe the leader is, purely as a redirect hint for
+        clients that guess wrong (see _on_client_propose/_on_client_query)
+        -- never used for anything Raft-safety-relevant."""
+        self._known_leader = leader_address
         if self.state != NodeState.FOLLOWER:
             self.state = NodeState.FOLLOWER
             self._cancel_heartbeat_timer()
@@ -366,13 +391,7 @@ class RaftNode:
             self.take_snapshot()
 
     def _apply_to_state_machine(self, command: dict[str, Any]) -> None:
-        operation = Operation(
-            index=self.last_applied,
-            op=command["op"],
-            key=command["key"],
-            value=command.get("value"),
-        )
-        self._state_machine.apply(operation)
+        self._state_machine.apply_command(self.last_applied, command)
 
     def take_snapshot(self) -> None:
         """Snapshot the state machine as of last_applied and compact the
@@ -462,7 +481,7 @@ class RaftNode:
             self._become_follower_for_new_term(term)
         if term < self.current_term:
             return {"term": self.current_term, "success": False}
-        self._recognize_current_leader()
+        self._recognize_current_leader(from_node)
 
         prev_log_index = body["prev_log_index"]
         prev_log_term = body["prev_log_term"]
@@ -503,7 +522,7 @@ class RaftNode:
             self._become_follower_for_new_term(term)
         if term < self.current_term:
             return {"term": self.current_term}
-        self._recognize_current_leader()
+        self._recognize_current_leader(from_node)
 
         last_included_index = body["last_included_index"]
         last_included_term = body["last_included_term"]
@@ -519,4 +538,19 @@ class RaftNode:
         self.last_applied = last_included_index
 
         return {"term": self.current_term}
-     
+
+    # -- client-facing RPCs -------------------------------------------------
+
+    def _on_client_propose(self, from_node: str, body: dict[str, Any]) -> dict[str, Any]:
+        if self.state != NodeState.LEADER:
+            return {"success": False, "leader_hint": self._known_leader}
+        index = self.propose(body["command"])
+        return {"success": True, "index": index}
+
+    def _on_client_query(self, from_node: str, body: dict[str, Any]) -> dict[str, Any]:
+        if self.state != NodeState.LEADER:
+            return {"success": False, "leader_hint": self._known_leader}
+        if self._query_fn is None:
+            return {"success": False, "error": "no query handler configured for this shard"}
+        result = self._query_fn(self._state_machine, body["query"])
+        return {"success": True, **result}
