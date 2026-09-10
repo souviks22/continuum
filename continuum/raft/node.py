@@ -98,6 +98,11 @@ class RaftNode:
         # time this node becomes leader, meaningless otherwise.
         self._next_index: dict[str, int] = {}
         self._match_index: dict[str, int] = {}
+        # Callbacks waiting on a specific index becoming committed (Step
+        # 5.1: the Timestamp Oracle needs to know when a batch-allocation
+        # write is actually durable across a majority, not just proposed
+        # locally, before it's safe to hand out timestamps from it).
+        self._commit_waiters: dict[int, list[Callable[[], None]]] = {}
 
         # If a snapshot already exists on disk (from a prior run), load
         # it before anything else -- last_applied jumps straight to what
@@ -124,6 +129,17 @@ class RaftNode:
     @property
     def last_log_term(self) -> int:
         return self.log.last_term
+
+    @property
+    def state_machine(self) -> Optional[ReplicatedStateMachine]:
+        """Read-only access to whatever state machine this node was
+        constructed with. Added in Step 6.1: the transaction coordinator
+        needs to read per-index prewrite/commit results
+        (PercolatorStateMachine.get_result) after wait_for_commit fires,
+        and only has a RaftNode reference to work with -- unlike
+        ShardManager-based callers, which already had
+        state_machine_for(shard_id)."""
+        return self._state_machine
 
     # -- persisted state, exposed read-only -------------------------------
 
@@ -269,15 +285,45 @@ class RaftNode:
         assigned log index immediately. That index is NOT yet
         committed/durable-across-the-cluster at this point -- the caller
         finds out an entry actually committed via the `apply_fn`
-        callback (or by polling commit_index/last_applied). Returns None
-        if we're not the leader; callers must handle that by finding the
-        real leader (client-routing logic, not this class's job)."""
+        callback, `wait_for_commit()`, or by polling commit_index/
+        last_applied. Returns None if we're not the leader; callers must
+        handle that by finding the real leader (client-routing logic,
+        not this class's job)."""
         if self.state != NodeState.LEADER:
             return None
         entry = self.log.append(self.current_term, command)
         self._match_index[self.node_id] = entry.index  # not read anywhere, kept for symmetry
         self._replicate_to_all()
+        # Covers the single-node-cluster case (no peers to hear back
+        # from) and, in general, any case where the self-append alone
+        # already constitutes a majority -- don't wait on AppendEntries
+        # replies that will never arrive to grant a majority we already
+        # have. The same bug shape Step 2.1 found and fixed for
+        # elections (majority only ever checked inside the vote-reply
+        # handler), just in replication instead of voting.
+        self._try_advance_commit_index()
         return entry.index
+
+    def wait_for_commit(self, index: int, callback: Callable[[], None]) -> None:
+        """Fire `callback` (no arguments) once `index` has committed.
+        Fires synchronously, immediately, if it's already committed.
+        Added in Step 5.1: the Timestamp Oracle can't safely hand out a
+        timestamp from a newly-allocated batch until the batch-allocation
+        write is durable across a majority, not merely proposed locally
+        -- `apply_fn`/state-machine application already happens on
+        commit, but nothing previously let arbitrary calling code learn
+        *when* a specific index committed without polling."""
+        if index <= self.commit_index:
+            callback()
+            return
+        self._commit_waiters.setdefault(index, []).append(callback)
+
+    def _fire_commit_waiters(self) -> None:
+        ready = [idx for idx in self._commit_waiters if idx <= self.commit_index]
+        for idx in ready:
+            callbacks = self._commit_waiters.pop(idx)
+            for cb in callbacks:
+                cb()
 
     def _replicate_to_all(self) -> None:
         if self.state != NodeState.LEADER:
@@ -368,6 +414,7 @@ class RaftNode:
             if replica_count >= self._majority_count():
                 self.commit_index = candidate
         self._apply_committed()
+        self._fire_commit_waiters()
 
     def _majority_count(self) -> int:
         return (len(self.peers) + 1) // 2 + 1
@@ -500,6 +547,7 @@ class RaftNode:
         if leader_commit > self.commit_index:
             self.commit_index = min(leader_commit, self.log.last_index)
             self._apply_committed()
+            self._fire_commit_waiters()
 
         return {"term": self.current_term, "success": True}
 
@@ -536,6 +584,7 @@ class RaftNode:
         self.log.install_snapshot(last_included_index, last_included_term)
         self.commit_index = max(self.commit_index, last_included_index)
         self.last_applied = last_included_index
+        self._fire_commit_waiters()
 
         return {"term": self.current_term}
 

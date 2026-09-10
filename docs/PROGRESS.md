@@ -190,4 +190,53 @@
 **Phase 3 complete.**
 
 ## Phase 4 — MVCC storage upgrade
-**In Progress...**
+- [x] `MVCCStore`: multi-version KV keyed by
+      (key, timestamp) — parallel sorted timestamp/value arrays per key,
+      bisect-based snapshot reads (newest version <= read_ts), strictly-
+      increasing-timestamp enforcement per key, tombstone deletes,
+      mechanical `gc(safe_point)` (policy for choosing a safe safe_point
+      deferred to Phase 6, once transaction tracking exists). Timestamps
+      are always caller-supplied, never invented by the store — a
+      replicated state machine can't safely pick its own wall-clock
+      timestamp during apply, since replicas would disagree.
+      `MVCCStateMachine` + `mvcc_query_fn` adapt this to RaftNode's
+      generic `ReplicatedStateMachine` protocol exactly like the KV and
+      metadata state machines do — proven end-to-end by wiring an MVCC
+      shard through `ShardManager` with zero new replication code:
+      writes replicate with correct version history to every replica,
+      snapshot reads at different timestamps return correct point-in-
+      time values, deletes replicate as real tombstones, and
+      take_snapshot()/compaction work unchanged. This is the substrate
+      Phase 6's Percolator-style transactions will sit on. 30 new tests,
+      231 total passing.
+
+## Phase 5 — Timestamp Oracle
+- [x] Added general-purpose
+      `RaftNode.wait_for_commit(index, callback)` (fired from all three
+      commit-advancement sites: leader majority-match, follower
+      AppendEntries, follower InstallSnapshot) — needed because the TSO
+      can't safely hand out a timestamp from a newly-allocated batch
+      until that batch write is durable across a majority, not merely
+      proposed locally. Bug caught while wiring this in and fixed:
+      single-node (zero-peer) clusters never advanced commit_index on
+      `propose()` at all — majority was only ever checked inside the
+      AppendEntries-reply handler, which a zero-peer cluster never
+      triggers; same bug shape as Step 2.1's election fix, now fixed the
+      same way (check immediately after the self-append too).
+      `TSOStateMachine`: durable high-water-mark, `ReplicatedStateMachine`
+      protocol again, zero new Raft code, same "just another Raft group"
+      pattern as the metadata layer. `TimestampOracle`: leader-side
+      batch allocation (reserve a batch with one Raft write, serve
+      individual requests from memory until exhausted) — batching is
+      the point: one Raft round-trip per *batch*, not per timestamp,
+      or the TSO would cap the whole cluster's throughput. Tracks which
+      term it last resynced batch state for, so regaining leadership
+      later re-derives its local counter from the durable high-water
+      mark instead of trusting stale local state. Centerpiece test
+      proves the actual safety property: after a leader crash with most
+      of its 1000-timestamp batch unused, the new leader's first
+      timestamp is not just higher than anything handed out, but higher
+      than the *entire* unused portion of the old batch — nothing ever
+      gets reused. 15 new tests (5 regression/commit-waiter tests on
+      RaftNode, 5 TSOStateMachine unit tests, 5 oracle integration
+      tests), 246 total passing.
