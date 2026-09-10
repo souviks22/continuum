@@ -240,3 +240,41 @@
       gets reused. 15 new tests (5 regression/commit-waiter tests on
       RaftNode, 5 TSOStateMachine unit tests, 5 oracle integration
       tests), 246 total passing.
+
+## Phase 6 — Percolator-style 2PC transaction layer
+- [x] **Step 6.1 — Prewrite/commit protocol + primary/secondary lock
+      records.** `PercolatorStore`: three column families on top of
+      Phase 4's MVCC store — `data` (key@start_ts, staged at prewrite,
+      before anything is visible), `writes` (key@commit_ts -> pointer
+      to start_ts, what makes a value visible to readers), `locks`
+      (one outstanding lock per key). `prewrite` detects both lock
+      conflicts and write-write conflicts (a newer commit than this
+      txn's start_ts); `commit` requires the caller's exact matching
+      lock; `rollback` is idempotent. `PercolatorStateMachine` adapts
+      this to the generic `ReplicatedStateMachine` protocol yet again —
+      zero new replication code — plus per-index result tracking
+      (`get_result`) since prewrite/commit can fail, unlike plain KV
+      writes, and the proposing coordinator needs to learn the outcome
+      after `wait_for_commit` fires (a new public `RaftNode.state_machine`
+      accessor was added for this). `Transaction` coordinator: full
+      prewrite-all → commit-primary → commit-secondaries-best-effort
+      flow, working across genuinely different shards (cross-shard 2PC,
+      the actual point of this step), built directly on
+      propose()/wait_for_commit() like the TSO rather than the
+      still-gapped RPC ClientPropose path. Real bug the tests caught:
+      the coordinator was waiting for *all* secondary commits before
+      reporting success, contradicting Percolator's actual atomicity
+      point (the primary's commit alone) — a partitioned secondary
+      would have hung the whole result indefinitely; fixed to report
+      success immediately after the primary commits, with secondaries
+      firing off as genuinely fire-and-forget. Explicitly deferred, not
+      papered over: lock-cleanup for a crashed coordinator's abandoned
+      lock (a blocked read just fails with "locked, retry" for now) and
+      GC tied to a transaction-aware safe point — both real complexity
+      scoped to Steps 6.2/6.3. 30 new tests (store mechanics, state
+      machine result-tracking, and end-to-end coordinator tests
+      including single-key, multi-key same-shard atomicity, cross-shard
+      commit and pre-commit invisibility, write-write conflict abort+
+      rollback, and primary-commits-while-secondary-partitioned), 276
+      total passing.
+      
