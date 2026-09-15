@@ -277,4 +277,25 @@
       commit and pre-commit invisibility, write-write conflict abort+
       rollback, and primary-commits-while-secondary-partitioned), 276
       total passing.
+- [x] **Step 6.2 — Lock cleanup / stuck-transaction resolution.** New
+      store-level primitives (`get_with_lock`, `get_lock`,
+      `find_commit_ts`) added alongside the existing `get()` rather than
+      changing it, to avoid touching already-tested Step 6.1 code.
+      `LockResolver`: on a blocking read, checks the primary key's
+      status (necessarily cross-shard — the primary can live on a
+      different shard than the key being read) and rolls the lock
+      forward (primary committed — commit the secondary with the same
+      commit_ts) or back (primary shows no trace, or is itself stale —
+      release the lock, resolves to legitimately absent). TTL is judged
+      by elapsed TSO timestamps rather than wall-clock time — explicitly
+      named as a proxy, not the same thing, since a replicated state
+      machine can't safely read its own clock during apply (same
+      determinism principle as Phase 4's MVCC timestamps). Wired into
+      `Transaction` as an optional constructor param — without one,
+      behavior is unchanged from Step 6.1 (plain "locked, retry"
+      failure). 11 new tests (7 store-primitive unit tests, 4 resolver
+      integration tests: roll-forward from a committed primary,
+      roll-back from an abandoned transaction, TTL refusing to touch a
+      fresh lock, and the no-resolver-configured baseline), 287 total
+      passing.
       

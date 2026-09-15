@@ -19,9 +19,28 @@ compaction) is deferred along with lock-cleanup to a later step.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Protocol
 
 from continuum.txn.store import Lock, PercolatorStore
+from continuum.raft.node import ReplicatedStateMachine
+
+
+class TransactionStateMachine(ReplicatedStateMachine, Protocol):
+    """A ReplicatedStateMachine that supports the Percolator transaction
+    operations prewrite/commit/rollback, plus the read operations get,
+    get_with_lock, get_lock, and find_commit_ts. The latter are used by
+    the Transaction coordinator to implement reads and lock resolution.
+    """
+
+    def get_result(self, index: int) -> Optional[dict[str, Any]]: ...
+
+    def get(self, key: str, read_ts: int) -> tuple[Optional[str], Optional[str]]: ...
+
+    def get_with_lock(self, key: str, read_ts: int) -> tuple[Optional[str], Optional[Lock]]: ...
+
+    def get_lock(self, key: str) -> Optional[Lock]: ...
+
+    def find_commit_ts(self, key: str, start_ts: int) -> Optional[int]: ...
 
 
 class PercolatorStateMachine:
