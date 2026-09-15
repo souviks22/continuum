@@ -34,6 +34,7 @@ from typing import Callable, Optional
 
 from continuum.tso.oracle import TimestampOracle
 from continuum.txn.resolver import LockResolver, TransactionNode
+from continuum.txn.safe_point import SafePointCalculator
 
 ResultCallback = Callable[[Optional[str], Optional[str]], None]  # (value, error) -> None
 CommitCallback = Callable[[bool, Optional[str]], None]  # (success, error) -> None
@@ -45,13 +46,35 @@ class Transaction:
         tso: TimestampOracle,
         shard_for_key: Callable[[str], TransactionNode],
         resolver: Optional[LockResolver] = None,
+        safe_point_tracker: Optional[SafePointCalculator] = None,
     ) -> None:
         self._tso = tso
         self._shard_for_key = shard_for_key
         self._resolver = resolver
+        self.safe_point_tracker = safe_point_tracker
+        self._registered_ts: Optional[int] = None
         self._mutations: dict[str, Optional[str]] = {}
         self.start_ts: Optional[int] = None
         self.commit_ts: Optional[int] = None
+
+    def close(self) -> None:
+        """Release this transaction's hold on the GC safe point. Callers
+        doing a read-only transaction (never calling commit()) must call
+        this explicitly when done -- commit() calls it automatically on
+        every path (success, conflict, or error), but there's no
+        equivalent automatic signal for "this read-only transaction is
+        finished" the way there is for a write transaction's commit.
+        Worth being honest about: this is exactly the kind of thing a
+        `with transaction(...) as txn:` context-manager pattern exists
+        to make hard to forget, which this class doesn't yet provide."""
+        if self.safe_point_tracker is not None and self._registered_ts is not None:
+            self.safe_point_tracker.end(self._registered_ts)
+            self._registered_ts = None
+
+    def _register_start_ts(self) -> None:
+        if self.safe_point_tracker is not None and self._registered_ts is None:
+            self.safe_point_tracker.begin(self.start_ts)
+            self._registered_ts = self.start_ts
 
     def set(self, key: str, value: str) -> None:
         self._mutations[key] = value
@@ -75,6 +98,7 @@ class Transaction:
             on_result(None, err)
             return
         self.start_ts = ts
+        self._register_start_ts()
         self._do_read(key, on_result)
 
     def _do_read(self, key: str, on_result: ResultCallback) -> None:
@@ -104,16 +128,31 @@ class Transaction:
         if not self._mutations:
             on_result(True, None)
             return
+        wrapped_result = self._closing(on_result)
         if self.start_ts is not None:
-            self._prewrite_phase(on_result)
+            self._prewrite_phase(wrapped_result)
         else:
-            self._tso.request_timestamp(lambda ts, err: self._on_start_ts(ts, err, on_result))
+            self._tso.request_timestamp(lambda ts, err: self._on_start_ts(ts, err, wrapped_result))
 
+    def _closing(self, on_result: CommitCallback) -> CommitCallback:
+        """Wrap a commit result callback so close() always runs on the
+        way out, on every path (success, conflict, or any error) --
+        commit() is the one place this codebase can guarantee "this
+        transaction is finished" without relying on the caller to
+        remember anything."""
+
+        def wrapped(success: bool, error: Optional[str]) -> None:
+            self.close()
+            on_result(success, error)
+
+        return wrapped
+    
     def _on_start_ts(self, ts: Optional[int], err: Optional[str], on_result: CommitCallback) -> None:
         if err:
             on_result(False, f"failed to acquire start_ts: {err}")
             return
         self.start_ts = ts
+        self._register_start_ts()
         self._prewrite_phase(on_result)
 
     def _prewrite_phase(self, on_result: CommitCallback) -> None:

@@ -298,4 +298,38 @@
       roll-back from an abandoned transaction, TTL refusing to touch a
       fresh lock, and the no-resolver-configured baseline), 287 total
       passing.
-      
+
+- [x] **Step 6.3 — GC tied to a safe point.** `SafePointCalculator`:
+      combines two independent bounds via `min()` (the more conservative
+      one wins) — precise active-transaction tracking (in-memory only,
+      NOT Raft-replicated; losing it on a crash is the *safe* failure
+      direction, just more conservative GC) and a TTL floor as the real
+      safety net if that tracking is ever wrong or incomplete (same
+      "assume a straggler beyond the TTL is abandoned" principle as Step
+      6.2's lock TTL — named as a deliberate production-style tradeoff,
+      not a compromise). `PercolatorStore.gc()` applies the same
+      safe_point to both `data` and `writes` independently — correct
+      (never discards anything still reachable) but not maximally tight,
+      an explicitly named simplification vs. a fully precise
+      write-record-reachability GC. GC itself goes through the
+      replicated log as a `"gc"` command rather than running locally per
+      replica, even though it's deterministic given identical state —
+      keeps it correctly ordered after every write below the safe point
+      on every replica, rather than risking a lagging follower GC-ing
+      before it's actually replicated everything the safe point assumes
+      it has. `Transaction` gained an optional `safe_point_tracker`
+      (register on start_ts, deregister via `close()` — auto-called on
+      every commit() path, but a read-only transaction must call it
+      explicitly; named honestly as exactly the kind of gap a
+      `with transaction() as txn:` pattern exists to prevent, which
+      this doesn't yet have). Test data bug caught while writing this:
+      my own test scenarios initially encoded backwards assumptions
+      about which of the two bounds should win — fixed by working
+      through the actual min() semantics rather than adjusting the code
+      to match a wrong intuition. 11 new tests (6 safe-point calculator
+      unit tests, 3 store-level GC tests, 2 end-to-end integration
+      tests: GC replicating identically across all replicas, and a
+      long-running transaction's snapshot surviving GC while open and
+      becoming collectible only after it closes), 298 total passing.
+
+**Phase 6 complete.**
