@@ -36,9 +36,9 @@ crashes, restart, and recovery.
   safe-point-based version garbage collection.
 - A Raft-backed timestamp oracle that reserves batches durably before issuing
   timestamps, so leadership changes cannot reuse timestamps.
-- Percolator-style transactional storage primitives: prewrite, primary/secondary
-  locks, commit pointers, rollback, conflict detection, and replicated command
-  results.
+- A Percolator-style 2PC transaction layer with cross-shard prewrite/commit
+  coordination, primary/secondary locks, commit pointers, rollback, lock
+  resolution for blocked reads, and safe-point-based garbage collection.
 
 ## Architecture
 
@@ -99,16 +99,25 @@ are never reused.
 
 `PercolatorStore` is layered on MVCC with three logical column families:
 
-| Family | Purpose |
-| --- | --- |
-| `data` | Value staged at `start_ts` during prewrite |
+| Family   | Purpose                                                          |
+| -------- | ---------------------------------------------------------------- |
+| `data`   | Value staged at `start_ts` during prewrite                       |
 | `writes` | `commit_ts → start_ts` pointer that makes a staged value visible |
-| `locks` | One outstanding primary-key/start-timestamp lock per key |
+| `locks`  | One outstanding primary-key/start-timestamp lock per key         |
 
 Prewrite detects locks and write-write conflicts. Commit requires the matching
 lock and creates the visible write record; rollback releases a matching lock
 idempotently. `PercolatorStateMachine` replicates those operations and retains
 their per-log-index outcomes for a coordinator to inspect after commit.
+
+The transaction layer implements the Percolator 2PC flow directly on top of the
+Raft-backed state machine: a coordinator prewrites all keys, commits the
+primary record, and then issues best-effort secondary commits. Readers and
+lock resolvers check the transaction's primary record to decide whether to roll a
+stale lock forward or release it when the primary is absent or clearly abandoned.
+This is the cross-shard transactional path the project was built to exercise:
+conflict detection, lock visibility, response timing after primary commit, and
+safe-point-driven GC of stale write and data records.
 
 ## What is intentionally not done yet
 
@@ -123,11 +132,14 @@ their per-log-index outcomes for a coordinator to inspect after commit.
   reads are future work.
 - Metadata can represent range splits, but there is no coordinated live data
   migration/split protocol across shard replicas.
-- Transactional storage has no user-facing transaction coordinator or automatic
-  cleanup/resolution of abandoned locks yet. The state-machine result cache is
-  also not pruned.
-- Garbage collection accepts a supplied safe point; selecting and coordinating
-  that safe point across active transactions is not implemented.
+- There is no higher-level user-facing transaction API or ergonomic
+  `with transaction()` shell yet; the coordinator/resolver logic is currently
+  exposed at the storage and state-machine layer rather than as a polished
+  client abstraction.
+- Lock cleanup is guarded by the transaction resolver and TTL-based safe-point
+  policy, but cluster-wide safe-point coordination and a fully general recovery
+  service for abandoned coordinator state remain future work.
+- The state-machine result cache is still not pruned automatically.
 
 ## Running the tests
 
@@ -147,24 +159,25 @@ across failover, and transactional conflict/visibility behaviour.
 
 ## Repository map
 
-| Path | Responsibility |
-| --- | --- |
-| `continuum/sim/` | Virtual clock, deterministic scheduler, simulated unreliable network, crash/restart model |
-| `continuum/chaos/` | Chaos-harness protocol, recording harness, and Linux `tc netem` command adapter |
-| `continuum/rpc/` | Message envelope, transport protocol, simulated transport, request/reply endpoint |
-| `continuum/storage/` | WAL, atomic JSON persistence, snapshots, single-version storage engine, and MVCC |
-| `continuum/raft/` | Raft node, replicated log/compaction, durable term-vote state |
+| Path                 | Responsibility                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `continuum/sim/`     | Virtual clock, deterministic scheduler, simulated unreliable network, crash/restart model |
+| `continuum/chaos/`   | Chaos-harness protocol, recording harness, and Linux `tc netem` command adapter           |
+| `continuum/rpc/`     | Message envelope, transport protocol, simulated transport, request/reply endpoint         |
+| `continuum/storage/` | WAL, atomic JSON persistence, snapshots, single-version storage engine, and MVCC          |
+| `continuum/raft/`    | Raft node, replicated log/compaction, durable term-vote state                             |
 | `continuum/cluster/` | Shard addressing and lifecycle, range partitioning, replicated metadata, bootstrap helper |
-| `continuum/client/` | Callback-based metadata routing and leader-aware KV client |
-| `continuum/tso/` | Timestamp-oracle state machine and batched leader-side allocator |
-| `continuum/txn/` | Percolator-style store and replicated transaction state-machine adapter |
-| `tests/` | Deterministic unit and integration specifications |
-| `docs/PROGRESS.md` | Detailed build history and design decisions by phase |
+| `continuum/client/`  | Callback-based metadata routing and leader-aware KV client                                |
+| `continuum/tso/`     | Timestamp-oracle state machine and batched leader-side allocator                          |
+| `continuum/txn/`     | Percolator-style store and replicated transaction state-machine adapter                   |
+| `tests/`             | Deterministic unit and integration specifications                                         |
+| `docs/PROGRESS.md`   | Detailed build history and design decisions by phase                                      |
 
 ## Project status
 
 The project has completed the simulator, durable storage, single-group Raft,
-multi-Raft sharding and metadata, client routing, MVCC, and timestamp-oracle
-milestones. It now contains the replicated Percolator storage substrate; the
-next major transaction work is coordination and recovery of abandoned locks.
-For the implementation history, see [docs/PROGRESS.md](docs/PROGRESS.md).
+multi-Raft sharding and metadata, client routing, MVCC, timestamp-oracle,
+and Percolator-style transactional milestones. The transaction layer now
+includes the replicated Percolator store, cross-shard 2PC coordinator flow,
+lock-resolution logic, and safe-point-aware GC. For the implementation history,
+see [docs/PROGRESS.md](docs/PROGRESS.md).
