@@ -111,6 +111,93 @@ func TestPublicMembershipReplacementFlow(t *testing.T) {
 	}
 }
 
+func TestMembershipAdmissionRejectsUnknownCompatibility(t *testing.T) {
+	network := continuum.NewInProcessNetwork()
+	peers := map[uint64]continuum.Peer{1: {Name: "admission-leader"}, 2: {Name: "unknown-member"}}
+	leader, err := continuum.Open(continuum.Config{
+		ID: 1, Peers: peers, InProcess: network, DataDir: t.TempDir(),
+		StateMachine: continuum.NewKVStateMachine(), Bootstrap: true, InitialVoters: []uint64{1},
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leader.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	waitPublicLeader(t, ctx, map[uint64]*continuum.Node{1: leader}, 1)
+
+	candidate, err := continuum.Open(continuum.Config{
+		ID: 2, Peers: peers, InProcess: network, DataDir: t.TempDir(),
+		StateMachine: &testMachine{}, BootstrapLearner: true, InitialVoters: []uint64{1},
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+
+	if err := leader.AddLearner(ctx, 2); !errors.Is(err, continuum.ErrIncompatibleMember) {
+		t.Fatalf("adding member with unknown compatibility error=%v", err)
+	}
+	state, err := leader.Membership(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMember(state.Learners, 2) || hasMember(state.Voters, 2) {
+		t.Fatalf("incompatible candidate entered membership: %+v", state)
+	}
+}
+
+func TestRemoteMembershipAdmissionRejectsUnknownCompatibility(t *testing.T) {
+	serverAddr, candidateAddr, clientAddr := availableTCPAddress(t), availableTCPAddress(t), availableTCPAddress(t)
+	peers := map[uint64]continuum.Peer{
+		1:   {Name: "admission-server", Address: serverAddr},
+		2:   {Name: "unknown-candidate", Address: candidateAddr},
+		100: {Name: "admission-client", Address: clientAddr},
+	}
+	server, err := continuum.Open(continuum.Config{
+		ID: 1, Peers: peers, ListenAddr: serverAddr, DataDir: t.TempDir(),
+		StateMachine: continuum.NewKVStateMachine(), Bootstrap: true, InitialVoters: []uint64{1}, InsecureLocal: true,
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	candidate, err := continuum.Open(continuum.Config{
+		ID: 2, Peers: peers, ListenAddr: candidateAddr, DataDir: t.TempDir(),
+		StateMachine: &testMachine{}, BootstrapLearner: true, InitialVoters: []uint64{1}, InsecureLocal: true,
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	waitPublicLeader(t, ctx, map[uint64]*continuum.Node{1: server}, 1)
+	remote, err := continuum.NewRemoteClient(continuum.RemoteClientConfig{
+		ID: 100, Name: "admission-client", ListenAddr: clientAddr,
+		Peers: map[uint64]continuum.Peer{1: peers[1]}, InsecureLocal: true,
+	}, continuum.ClientOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Close()
+
+	if err := remote.AddLearner(ctx, 2); err == nil {
+		t.Fatal("remote client added a member with unknown compatibility")
+	}
+	state, err := server.Membership(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMember(state.Learners, 2) || hasMember(state.Voters, 2) {
+		t.Fatalf("incompatible candidate entered membership: %+v", state)
+	}
+}
+
 func waitPublicLeader(t *testing.T, ctx context.Context, nodes map[uint64]*continuum.Node, ids ...uint64) *continuum.Node {
 	t.Helper()
 	for {
@@ -464,6 +551,16 @@ func TestPublicRemoteClientUsesTCPProposalRangeWatchAndLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer node.Close()
+	learner, err := continuum.Open(continuum.Config{
+		ID: 2, Peers: networkPeers, ListenAddr: networkPeers[2].Address, DataDir: t.TempDir(),
+		StateMachine: continuum.NewKVStateMachine(), BootstrapLearner: true, InitialVoters: []uint64{1},
+		InsecureLocal: true, TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+		ProposalTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer learner.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	waitPublicLeader(t, ctx, map[uint64]*continuum.Node{1: node}, 1)

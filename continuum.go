@@ -136,6 +136,8 @@ type Node struct {
 	clock         clock.Clock
 	closer        interface{ Close() error }
 	endpointClose func()
+	endpoint      *rpc.Endpoint
+	peerNames     map[uint64]string
 	addr          net.Addr
 	timeout       time.Duration
 	closing       atomic.Bool
@@ -257,11 +259,12 @@ func Open(cfg Config) (*Node, error) {
 				}
 				if openErr == nil {
 					store := kvSM.machine.Store()
+					membershipNode := newCompatibilityMembershipNode(raw, endpoint, cfg.Peers, kvSM.machine, cfg.ProposalTimeout)
 					for _, register := range []func() error{
 						func() error { return client.RegisterNodeRPC(endpoint, raw, cfg.ProposalTimeout) },
 						func() error { return client.RegisterRangeRPC(endpoint, raw, store, cfg.ProposalTimeout) },
 						func() error { return client.RegisterWatchRPC(endpoint, raw, store, serialClock, cfg.ProposalTimeout) },
-						func() error { return client.RegisterMembershipRPC(endpoint, raw, cfg.ProposalTimeout) },
+						func() error { return client.RegisterMembershipRPC(endpoint, membershipNode, cfg.ProposalTimeout) },
 						func() error {
 							return client.RegisterMembershipStateRPC(endpoint, raw, func() client.MembershipSnapshot {
 								state := raw.Membership()
@@ -296,7 +299,11 @@ func Open(cfg Config) (*Node, error) {
 		loop.Close()
 		return nil, err
 	}
-	return &Node{raw: raw, id: cfg.ID, kvMachine: kvMachine, kvClient: kvClient, loop: loop, clock: serialClock, closer: transportCloser, endpointClose: endpoint.Close, addr: nodeAddr, timeout: cfg.ProposalTimeout, closeDone: make(chan struct{})}, nil
+	peerNames := make(map[uint64]string, len(cfg.Peers))
+	for id, peer := range cfg.Peers {
+		peerNames[id] = peer.Name
+	}
+	return &Node{raw: raw, id: cfg.ID, kvMachine: kvMachine, kvClient: kvClient, loop: loop, clock: serialClock, closer: transportCloser, endpointClose: endpoint.Close, endpoint: endpoint, peerNames: peerNames, addr: nodeAddr, timeout: cfg.ProposalTimeout, closeDone: make(chan struct{})}, nil
 }
 
 // Propose submits one command. If the context expires after Raft accepted it,

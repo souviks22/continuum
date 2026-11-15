@@ -39,8 +39,11 @@ compatibility independently for:
 
 Compatibility must be a cluster decision. The current activation level is
 replicated, and the activation command checks the membership view at apply time.
-Membership admission after activation still needs a server-enforced capability
-check so an unsupported new member cannot join and apply future commands.
+The embedded API and membership RPC query candidates before add or promotion,
+require a current compatibility report and sufficient command, snapshot, and
+feature-level support, and recheck against the active level immediately before
+proposing the configuration change. Unknown or unreachable candidates fail
+closed.
 
 ## Required rollout protocol
 
@@ -72,8 +75,8 @@ the active configuration.
   identically by every member after activation.
 - Snapshot and durable-state fixtures from N are opened by N+1; downgrade tests
   cover both pre-activation and post-activation behavior.
-- Membership admission enforces capability checks after activation, regardless
-  of whether membership changes come through the remote client or embedded API.
+- Broader mixed-version membership tests still need to cover capability changes
+  and reconfiguration races during each rollout phase.
 - The operator procedure names the activation point and states when rollback
   stops being safe.
 
