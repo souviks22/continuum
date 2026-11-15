@@ -13,10 +13,10 @@ limitation.
 
 ## Quick start
 
-Requires Go. Run the repository test suite with:
+Requires Go. Run the full repository test suite with:
 
 ```sh
-go test -race .
+go test -race ./...
 ```
 
 For a minimal durable single-node example, write a value and then reopen the
@@ -34,7 +34,23 @@ local settings and are not production deployment recipes.
 
 ## Go API
 
-The root `continuum` package exposes `Open(Config)` for an embedded node,
-`NewKVStateMachine` for the built-in KV state machine, and
-`NewRemoteClient` for applications connecting over TCP. See the package
-documentation and examples for configuration details.
+The root `continuum` package has three entry points:
+
+- `Open(Config)` starts a thread-safe embedded Raft node. `Config` selects the
+  state machine, data directory, peers, bootstrap mode, transport security and
+  snapshot/compaction settings. A node exposes `Propose`, `ReadIndex`, `Health`,
+  and `Close`.
+- `NewKVStateMachine()` creates the built-in replicated MVCC state machine.
+  KV-enabled nodes expose `Txn`, `RetryTxn`, linearizable `Range`, resumable
+  `Watch`, leases, compaction and session checkpoint methods. They also expose
+  membership reads and add/promote/remove operations.
+- `NewClient(nodes, options)` routes those KV and membership operations across
+  embedded nodes in one process. `NewRemoteClient(config, options)` provides the
+  same client operations over TCP for applications in separate processes.
+  Remote clients can call `Compatibility` to inspect configured servers and
+  `CheckCompatibility` to compare their reported formats with a proposed
+  target. This check is advisory; rolling upgrades are not yet supported.
+
+See [the remote client guide](docs/REMOTE_CLIENT.md) and the runnable examples
+for configuration and lifecycle details. The Go package documentation lists
+the exported types and methods.
