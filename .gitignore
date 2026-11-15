@@ -1,3 +1,11 @@
-.venv
-.pytest_cache
-**/__pycache__
+# Go build and test artifacts
+/continuum
+*.test
+coverage.out
+
+# Local data and editor/OS files
+continuum-data/
+cluster-process-data/
+.DS_Store
+.idea/
+.vscode/
