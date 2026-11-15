@@ -11,6 +11,7 @@ import (
 	pb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/souviks22/continuum/internal/kv"
 	"github.com/souviks22/continuum/internal/raftnode"
 	"github.com/souviks22/continuum/internal/sim"
 	"github.com/souviks22/continuum/internal/vfs"
@@ -179,7 +180,7 @@ func TestMembershipAwareStateMachineReceivesAppliedConfiguration(t *testing.T) {
 	})
 	for _, id := range c.ids {
 		sm := c.procs[id].alt.(*membershipRecordSM)
-		if !slices.Equal(sm.lastMembership.Voters, []uint64{1, 2, 3}) || len(sm.lastMembership.Learners) != 0 {
+		if !slices.Equal(sm.lastMembership.voters, []uint64{1, 2, 3}) || len(sm.lastMembership.learners) != 0 {
 			t.Fatalf("node %d saw membership %+v", id, sm.lastMembership)
 		}
 	}
@@ -211,9 +212,87 @@ func TestMembershipAwareStateMachineReceivesAppliedConfiguration(t *testing.T) {
 			continue
 		}
 		sm := c.procs[id].alt.(*membershipRecordSM)
-		if !slices.Equal(sm.lastMembership.Voters, wantVoters) {
+		if !slices.Equal(sm.lastMembership.voters, wantVoters) {
 			t.Fatalf("node %d saw stale membership %+v", id, sm.lastMembership)
 		}
+	}
+}
+
+func TestCompatibilityActivationIsReplicatedAndBoundToCurrentMembership(t *testing.T) {
+	newLegacyMachine := func() raftnode.StateMachine {
+		sm := kv.NewStateMachine()
+		if err := sm.Restore(kv.NewStore().Snapshot()); err != nil {
+			t.Fatalf("restore legacy snapshot: %v", err)
+		}
+		return sm
+	}
+	c := newCluster(t, 0x636f6d706174, 3, opts{newSM: newLegacyMachine})
+	leader := c.waitLeader(30 * time.Second)
+	oldConfig := leader.node.Membership()
+	oldDigest := kv.MembershipDigest(oldConfig.GetVoters(), oldConfig.GetLearners(), oldConfig.GetVotersOutgoing(), oldConfig.GetLearnersNext(), oldConfig.GetAutoLeave())
+	removeID := uint64(3)
+	if leader.id == removeID {
+		removeID = 2
+	}
+	var removed bool
+	if err := leader.node.RemoveMember(removeID, time.Second, func(err error) { removed = err == nil }); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUntil("membership change before compatibility activation", 10*time.Second, func() bool { return removed })
+	wantVoters := []uint64{1, 2, 3}
+	wantVoters = slices.Delete(wantVoters, int(removeID-1), int(removeID))
+	c.waitUntil("configuration to reach every replica", 5*time.Second, func() bool {
+		for _, id := range c.ids {
+			if !slices.Equal(c.procs[id].node.Membership().GetVoters(), wantVoters) {
+				return false
+			}
+		}
+		return true
+	})
+	staleCommand, err := kv.EncodeActivateCompatibility(kv.CompatibilityLevelSessions, oldDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := c.propose(c.leader(), string(staleCommand))
+	if stale.err != nil {
+		t.Fatalf("stale activation proposal: %v", stale.err)
+	}
+	if _, err := kv.DecodeResult([]byte(stale.payload)); !errors.Is(err, kv.ErrMembershipChanged) {
+		t.Fatalf("stale activation result error=%v", err)
+	}
+	for _, id := range wantVoters {
+		if got := c.procs[id].alt.(*kv.StateMachine).CompatibilityLevel(); got != kv.CompatibilityLevelBase {
+			t.Fatalf("node %d activated despite changed membership: %d", id, got)
+		}
+	}
+	currentLeader := c.leader()
+	current := currentLeader.node.Membership()
+	currentDigest := kv.MembershipDigest(current.GetVoters(), current.GetLearners(), current.GetVotersOutgoing(), current.GetLearnersNext(), current.GetAutoLeave())
+	command, err := kv.EncodeActivateCompatibility(kv.CompatibilityLevelSessions, currentDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := c.propose(currentLeader, string(command))
+	if active.err != nil {
+		t.Fatalf("valid activation proposal: %v", active.err)
+	}
+	if _, err := kv.DecodeResult([]byte(active.payload)); err != nil {
+		t.Fatalf("valid activation result: %v", err)
+	}
+	c.waitUntil("compatibility activation to replicate", 5*time.Second, func() bool {
+		for _, id := range wantVoters {
+			if c.procs[id].alt.(*kv.StateMachine).CompatibilityLevel() != kv.CompatibilityLevelSessions {
+				return false
+			}
+		}
+		return true
+	})
+	register := c.propose(c.leader(), string(kv.EncodeRegister()))
+	if register.err != nil {
+		t.Fatalf("session command after activation: %v", register.err)
+	}
+	if _, err := kv.DecodeSession([]byte(register.payload)); err != nil {
+		t.Fatalf("session command result: %v", err)
 	}
 }
 

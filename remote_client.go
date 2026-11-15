@@ -11,6 +11,7 @@ import (
 
 	internalClient "github.com/souviks22/continuum/internal/client"
 	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/kv"
 	"github.com/souviks22/continuum/internal/rpc"
 	"github.com/souviks22/continuum/internal/runtime"
 	"github.com/souviks22/continuum/internal/transport"
@@ -48,6 +49,7 @@ type RemoteClient struct {
 	membership *internalClient.MembershipClient
 	endpoint   *rpc.Endpoint
 	peers      []remoteCompatibilityPeer
+	adminGate  chan struct{}
 	addr       net.Addr
 }
 
@@ -60,15 +62,17 @@ type remoteCompatibilityPeer struct {
 // Known is false when that server predates the compatibility RPC; unknown
 // support must never be treated as compatible.
 type PeerCompatibility struct {
-	ID                         uint64
-	Name                       string
-	Known                      bool
-	RPCWireVersion             uint8
-	KVCommandVersion           uint8
-	KVSnapshotWriteVersion     uint8
-	MaxKVCommandKind           uint8
-	KVSnapshotReadVersions     []uint8
-	CompatibilityReportVersion uint8
+	ID                          uint64
+	Name                        string
+	Known                       bool
+	RPCWireVersion              uint8
+	KVCommandVersion            uint8
+	KVSnapshotWriteVersion      uint8
+	MaxKVCommandKind            uint8
+	KVSnapshotReadVersions      []uint8
+	SupportedCompatibilityLevel uint8
+	ActiveCompatibilityLevel    uint8
+	CompatibilityReportVersion  uint8
 }
 
 // NewRemoteClient opens a bounded TCP client transport, then builds the same
@@ -181,7 +185,7 @@ func NewRemoteClient(cfg RemoteClientConfig, opts ClientOptions) (*RemoteClient,
 	}
 	runtimeNode := &Node{kvClient: inner, loop: loop, timeout: opts.Timeout, clock: serialClock, closeDone: make(chan struct{})}
 	wrapped := &Client{runtime: runtimeNode, loop: loop, inner: inner, closer: tcp, endpointClose: endpoint.Close, done: make(chan struct{})}
-	return &RemoteClient{client: wrapped, membership: membership, endpoint: endpoint, peers: compatibilityPeers, addr: tcp.Addr()}, nil
+	return &RemoteClient{client: wrapped, membership: membership, endpoint: endpoint, peers: compatibilityPeers, adminGate: make(chan struct{}, 1), addr: tcp.Addr()}, nil
 }
 
 func (c *RemoteClient) Addr() net.Addr { return c.addr }
@@ -232,6 +236,8 @@ func (c *RemoteClient) Compatibility(ctx context.Context) ([]PeerCompatibility, 
 					reports[index].KVSnapshotWriteVersion = supported.KVSnapshotWriteVersion
 					reports[index].MaxKVCommandKind = supported.MaxKVCommandKind
 					reports[index].KVSnapshotReadVersions = append([]uint8(nil), supported.KVSnapshotReadVersions...)
+					reports[index].SupportedCompatibilityLevel = supported.SupportedCompatibilityLevel
+					reports[index].ActiveCompatibilityLevel = supported.ActiveCompatibilityLevel
 					reports[index].CompatibilityReportVersion = supported.CompatibilityReportVersion
 				}
 				remaining--
@@ -254,6 +260,47 @@ func (c *RemoteClient) Compatibility(ctx context.Context) ([]PeerCompatibility, 
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// ActivateCompatibility commits a compatibility level after checking every
+// current voter and learner. The committed command carries a fingerprint of
+// that membership; if configuration changes before apply, activation fails.
+func (c *RemoteClient) ActivateCompatibility(ctx context.Context, level uint8) error {
+	requirements, err := CompatibilityRequirementsForLevel(level)
+	if err != nil {
+		return err
+	}
+	check, err := c.CheckCompatibility(ctx, requirements)
+	if err != nil {
+		return err
+	}
+	if !check.Ready {
+		return &CompatibilityPreflightError{Issues: check.Issues}
+	}
+	membership := check.Membership
+	digest := kv.MembershipDigest(membership.Voters, membership.Learners, membership.VotersOutgoing, membership.LearnersNext, membership.AutoLeave)
+	command, err := kv.EncodeActivateCompatibility(level, digest)
+	if err != nil {
+		return err
+	}
+	var result []byte
+	err = c.runMembership(ctx, true, func(done func(error)) error {
+		return c.client.inner.ProposeControl(command, func(data []byte, err error) {
+			result = data
+			done(err)
+		})
+	})
+	if err != nil {
+		return err
+	}
+	decoded, err := kv.DecodeResult(result)
+	if err != nil {
+		return err
+	}
+	if !decoded.Succeeded {
+		return errors.New("continuum: compatibility activation was rejected")
+	}
+	return nil
 }
 func (c *RemoteClient) Txn(ctx context.Context, txn Txn) (TxnResult, error) {
 	return c.client.Txn(ctx, txn)
@@ -327,6 +374,12 @@ func (c *RemoteClient) runMembership(ctx context.Context, unknownOnCancel bool, 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	select {
+	case c.adminGate <- struct{}{}:
+		defer func() { <-c.adminGate }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	started := make(chan error, 1)
 	result := make(chan error, 1)

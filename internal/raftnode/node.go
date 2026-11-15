@@ -603,7 +603,13 @@ func (n *Node) apply(e *pb.Entry) error {
 			}
 			var res []byte
 			if aware, ok := n.sm.(MembershipAwareStateMachine); ok {
-				res = aware.ApplyWithMembership(idx, cmd, n.appliedMembership())
+				conf := n.confState
+				res = aware.ApplyWithMembership(idx, cmd,
+					append([]uint64(nil), conf.GetVoters()...),
+					append([]uint64(nil), conf.GetLearners()...),
+					append([]uint64(nil), conf.GetVotersOutgoing()...),
+					append([]uint64(nil), conf.GetLearnersNext()...),
+					conf.GetAutoLeave())
 			} else {
 				res = n.sm.Apply(idx, cmd)
 			}
@@ -633,16 +639,6 @@ func (n *Node) apply(e *pb.Entry) error {
 	}
 	n.applied = idx
 	return nil
-}
-
-func (n *Node) appliedMembership() AppliedMembership {
-	return AppliedMembership{
-		Voters:         append([]uint64(nil), n.confState.GetVoters()...),
-		Learners:       append([]uint64(nil), n.confState.GetLearners()...),
-		VotersOutgoing: append([]uint64(nil), n.confState.GetVotersOutgoing()...),
-		LearnersNext:   append([]uint64(nil), n.confState.GetLearnersNext()...),
-		AutoLeave:      n.confState.GetAutoLeave(),
-	}
 }
 
 // maybeSnapshot takes a local snapshot every SnapshotEvery applied entries. The
@@ -709,6 +705,11 @@ func (n *Node) Propose(cmd []byte, timeout time.Duration, cb func(result []byte,
 	}
 	if !n.IsLeader() {
 		return &NotLeaderError{Leader: n.Leader()}
+	}
+	if validator, ok := n.sm.(CommandValidator); ok {
+		if err := validator.ValidateCommand(cmd); err != nil {
+			return err
+		}
 	}
 	if timeout <= 0 {
 		return fmt.Errorf("raftnode: timeout must be positive, got %v", timeout)

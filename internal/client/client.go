@@ -6,6 +6,7 @@
 package client
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sort"
@@ -176,6 +177,31 @@ func (c *Client) OpenSession(cb func(error)) error {
 		c.busy = false
 		c.openCallback = nil
 		c.attemptID++
+	}
+	return err
+}
+
+// ProposeControl submits a caller-constructed replicated control command using
+// the same leader routing as KV operations. It is serialized against the
+// client's session transaction and reports ambiguous acceptance unchanged.
+func (c *Client) ProposeControl(command []byte, cb func([]byte, error)) error {
+	if c.closed {
+		return ErrClosed
+	}
+	if c.busy {
+		return ErrBusy
+	}
+	if len(command) == 0 || cb == nil {
+		return errors.New("client: control command and callback are required")
+	}
+	c.busy = true
+	cmd := bytes.Clone(command)
+	err := c.propose(cmd, func(result []byte, err error) {
+		c.busy = false
+		cb(result, err)
+	})
+	if err != nil {
+		c.busy = false
 	}
 	return err
 }

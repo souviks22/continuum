@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/souviks22/continuum"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 type testMachine struct{ value string }
@@ -541,6 +542,59 @@ func TestPublicRemoteClientUsesTCPProposalRangeWatchAndLeases(t *testing.T) {
 	membership, err = remote.Membership(ctx)
 	if err != nil || !sameMembers(membership.Learners, nil) {
 		t.Fatalf("remote membership after removal=%+v err=%v", membership, err)
+	}
+}
+
+func TestPublicRemoteClientActivatesCompatibilityAfterPreflight(t *testing.T) {
+	serverAddr := availableTCPAddress(t)
+	clientAddr := availableTCPAddress(t)
+	legacyState := continuum.NewKVStateMachine()
+	if err := legacyState.Restore(kv.NewStore().Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	node, err := continuum.Open(continuum.Config{
+		ID: 1, Peers: map[uint64]continuum.Peer{
+			1:   {Name: "upgrade-server", Address: serverAddr},
+			100: {Name: "upgrade-client", Address: clientAddr},
+		},
+		ListenAddr: serverAddr, DataDir: t.TempDir(), StateMachine: legacyState,
+		Bootstrap: true, InitialVoters: []uint64{1}, InsecureLocal: true,
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+		ProposalTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	waitPublicLeader(t, ctx, map[uint64]*continuum.Node{1: node}, 1)
+	remote, err := continuum.NewRemoteClient(continuum.RemoteClientConfig{
+		ID: 100, Name: "upgrade-client", ListenAddr: clientAddr,
+		Peers:         map[uint64]continuum.Peer{1: {Name: "upgrade-server", Address: node.Addr().String()}},
+		InsecureLocal: true,
+	}, continuum.ClientOptions{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Close()
+	requirements, err := continuum.CompatibilityRequirementsForLevel(continuum.CompatibilityLevelLeases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := remote.CheckCompatibility(ctx, requirements)
+	if err != nil || !check.Ready {
+		t.Fatalf("preflight ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
+	}
+	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
+		t.Fatalf("activate compatibility: %v", err)
+	}
+	reports, err := remote.Compatibility(ctx)
+	if err != nil || len(reports) != 1 || reports[0].ActiveCompatibilityLevel != continuum.CompatibilityLevelLeases {
+		t.Fatalf("compatibility reports=%+v err=%v", reports, err)
+	}
+	if _, err := remote.Txn(ctx, continuum.Put([]byte("upgrade/active"), []byte("yes"))); err != nil {
+		t.Fatalf("transaction after activation: %v", err)
 	}
 }
 

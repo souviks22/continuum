@@ -2,9 +2,26 @@ package continuum
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/souviks22/continuum/internal/kv"
 )
+
+var ErrCompatibilityNotReady = errors.New("continuum: cluster is not ready for compatibility activation")
+
+// CompatibilityPreflightError reports why the proposed compatibility level
+// could not be activated. Callers can inspect individual member issues.
+type CompatibilityPreflightError struct{ Issues []CompatibilityIssue }
+
+func (e *CompatibilityPreflightError) Error() string {
+	return fmt.Sprintf("%v: %d compatibility issue(s)", ErrCompatibilityNotReady, len(e.Issues))
+}
+
+func (e *CompatibilityPreflightError) Is(target error) bool {
+	return target == ErrCompatibilityNotReady
+}
 
 // CompatibilityRequirements describes the formats a proposed binary writes
 // and the commands and snapshots it can read.
@@ -12,8 +29,31 @@ type CompatibilityRequirements struct {
 	RPCWireVersion         uint8
 	KVCommandVersion       uint8
 	MaxKVCommandKind       uint8
+	CompatibilityLevel     uint8
 	KVSnapshotWriteVersion uint8
 	KVSnapshotReadVersions []uint8
+}
+
+// CompatibilityRequirementsForLevel returns this build's format contract for
+// one feature level. The older snapshot write formats are retained during
+// staged activation so peers can be upgraded before newer formats are emitted.
+func CompatibilityRequirementsForLevel(level uint8) (CompatibilityRequirements, error) {
+	var snapshotWrite uint8
+	switch level {
+	case kv.CompatibilityLevelBase:
+		snapshotWrite = 1
+	case kv.CompatibilityLevelSessions:
+		snapshotWrite = 2
+	case kv.CompatibilityLevelLeases:
+		snapshotWrite = 4
+	default:
+		return CompatibilityRequirements{}, fmt.Errorf("continuum: unsupported compatibility level %d", level)
+	}
+	return CompatibilityRequirements{
+		RPCWireVersion: 1, KVCommandVersion: 1, MaxKVCommandKind: 9,
+		CompatibilityLevel: level, KVSnapshotWriteVersion: snapshotWrite,
+		KVSnapshotReadVersions: []uint8{1, 2, 3, 4},
+	}, nil
 }
 
 // CompatibilityIssue identifies a current member that does not satisfy a
@@ -37,7 +77,7 @@ type CompatibilityCheck struct {
 // Ready is false. The check does not activate a format or prevent a later
 // membership change, so callers must not treat it as an atomic upgrade gate.
 func (c *RemoteClient) CheckCompatibility(ctx context.Context, target CompatibilityRequirements) (CompatibilityCheck, error) {
-	if target.RPCWireVersion == 0 || target.KVCommandVersion == 0 || target.MaxKVCommandKind == 0 || target.KVSnapshotWriteVersion == 0 || len(target.KVSnapshotReadVersions) == 0 {
+	if target.RPCWireVersion == 0 || target.KVCommandVersion == 0 || target.MaxKVCommandKind == 0 || target.CompatibilityLevel == 0 || target.KVSnapshotWriteVersion == 0 || len(target.KVSnapshotReadVersions) == 0 {
 		return CompatibilityCheck{}, fmt.Errorf("continuum: incomplete target compatibility requirements")
 	}
 	before, err := c.Membership(ctx)
@@ -82,9 +122,15 @@ func (c *RemoteClient) CheckCompatibility(ctx context.Context, target Compatibil
 		if report.MaxKVCommandKind < target.MaxKVCommandKind {
 			check.addIssue(id, fmt.Sprintf("member command support %d is below target requirement %d", report.MaxKVCommandKind, target.MaxKVCommandKind))
 		}
-		if report.CompatibilityReportVersion < 2 || len(report.KVSnapshotReadVersions) == 0 {
-			check.addIssue(id, "member report lacks readable snapshot versions")
+		if report.CompatibilityReportVersion < 3 || len(report.KVSnapshotReadVersions) == 0 {
+			check.addIssue(id, "member report lacks feature-level or readable snapshot versions")
 			continue
+		}
+		if report.SupportedCompatibilityLevel < target.CompatibilityLevel {
+			check.addIssue(id, fmt.Sprintf("member supports feature level %d, target requires %d", report.SupportedCompatibilityLevel, target.CompatibilityLevel))
+		}
+		if report.ActiveCompatibilityLevel > target.CompatibilityLevel {
+			check.addIssue(id, fmt.Sprintf("member already has feature level %d active; downgrade to %d is forbidden", report.ActiveCompatibilityLevel, target.CompatibilityLevel))
 		}
 		if !hasVersion(report.KVSnapshotReadVersions, target.KVSnapshotWriteVersion) {
 			check.addIssue(id, fmt.Sprintf("member cannot read target snapshot version %d", target.KVSnapshotWriteVersion))

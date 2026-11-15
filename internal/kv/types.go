@@ -69,6 +69,11 @@ const (
 	MaxLeases = 10000
 	// MaxLeaseTTL bounds lease lifetime in replicated ticks.
 	MaxLeaseTTL = 1_000_000
+
+	CompatibilityLevelBase     uint8 = 1 // transactions and compaction
+	CompatibilityLevelSessions uint8 = 2 // deduplicated sessions
+	CompatibilityLevelLeases   uint8 = 3 // replicated leases and TTL
+	MaxCompatibilityLevel            = CompatibilityLevelLeases
 )
 
 var (
@@ -89,9 +94,11 @@ var (
 	ErrStaleRequest = errors.New("kv: stale request sequence number")
 	// ErrResultNotCached means the request is a repeat of the session's latest,
 	// and it DID apply, but its result was too large to be remembered.
-	ErrResultNotCached = errors.New("kv: request applied but its result was not retained")
-	ErrLeaseNotFound   = errors.New("kv: lease not found")
-	ErrTooManyLeases   = errors.New("kv: active lease limit reached")
+	ErrResultNotCached   = errors.New("kv: request applied but its result was not retained")
+	ErrLeaseNotFound     = errors.New("kv: lease not found")
+	ErrTooManyLeases     = errors.New("kv: active lease limit reached")
+	ErrFeatureInactive   = errors.New("kv: feature is not active for this cluster")
+	ErrMembershipChanged = errors.New("kv: membership changed since compatibility preflight")
 )
 
 func invalid(format string, a ...any) error {

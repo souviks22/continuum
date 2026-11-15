@@ -26,14 +26,34 @@ type lease struct {
 // order, identically on every replica. It also owns the session table that
 // makes retried writes safe (see the package comment).
 type StateMachine struct {
-	store    *Store
-	sessions map[uint64]*session
-	leases   map[uint64]*lease
+	store              *Store
+	sessions           map[uint64]*session
+	leases             map[uint64]*lease
+	compatibilityLevel uint8
 }
 
 // NewStateMachine returns an empty state machine.
 func NewStateMachine() *StateMachine {
-	return &StateMachine{store: NewStore(), sessions: map[uint64]*session{}, leases: map[uint64]*lease{}}
+	return &StateMachine{store: NewStore(), sessions: map[uint64]*session{}, leases: map[uint64]*lease{}, compatibilityLevel: MaxCompatibilityLevel}
+}
+
+// CompatibilityLevel is the highest KV feature level enabled by committed
+// compatibility activation. Fresh clusters start at the latest supported
+// level; legacy snapshots restore at the level their format represents.
+func (m *StateMachine) CompatibilityLevel() uint8 { return m.compatibilityLevel }
+
+// CompatibilityFormats reports this state machine's read/write formats and
+// supported feature level for compatibility inventory.
+func (m *StateMachine) CompatibilityFormats() (commandVersion, snapshotWriteVersion, maxCommandKind, supportedLevel, activeLevel byte, snapshotReadVersions []byte) {
+	switch m.compatibilityLevel {
+	case CompatibilityLevelBase:
+		snapshotWriteVersion = 1
+	case CompatibilityLevelSessions:
+		snapshotWriteVersion = 2
+	default:
+		snapshotWriteVersion = smSnapshotVersion
+	}
+	return wireVersion, snapshotWriteVersion, kindActivateCompatibility, MaxCompatibilityLevel, m.compatibilityLevel, []byte{1, 2, snapshotVersion, smSnapshotVersion}
 }
 
 // Store returns the underlying store for reads. Callers must be on the same
@@ -58,6 +78,48 @@ func (m *StateMachine) LeaseTickCommand() []byte { return EncodeLeaseTick() }
 func (m *StateMachine) Apply(index uint64, cmd []byte) []byte {
 	c, err := decodeCommand(cmd)
 	if err != nil {
+		return encodeError(err)
+	}
+	if c.kind == kindActivateCompatibility {
+		return encodeError(ErrMembershipChanged)
+	}
+	return m.applyDecoded(index, c)
+}
+
+// ApplyWithMembership applies a committed command with the configuration that
+// was active immediately before this entry. Compatibility activation is
+// rejected if membership no longer matches the preflight fingerprint.
+func (m *StateMachine) ApplyWithMembership(index uint64, cmd []byte, voters, learners, votersOutgoing, learnersNext []uint64, autoLeave bool) []byte {
+	c, err := decodeCommand(cmd)
+	if err != nil {
+		return encodeError(err)
+	}
+	if c.kind == kindActivateCompatibility {
+		got := MembershipDigest(voters, learners, votersOutgoing, learnersNext, autoLeave)
+		if got != c.membershipDigest {
+			return encodeError(fmt.Errorf("%w: activation fingerprint %x does not match applied configuration %x", ErrMembershipChanged, c.membershipDigest, got))
+		}
+		if c.compatibilityLevel < m.compatibilityLevel {
+			return encodeError(invalid("compatibility level cannot move backwards from %d to %d", m.compatibilityLevel, c.compatibilityLevel))
+		}
+		m.compatibilityLevel = c.compatibilityLevel
+		return encodeResult(TxnResult{Succeeded: true, Revision: m.store.rev})
+	}
+	return m.applyDecoded(index, c)
+}
+
+// ValidateCommand rejects feature use before it can enter the Raft log while
+// the corresponding compatibility level is inactive.
+func (m *StateMachine) ValidateCommand(command []byte) error {
+	c, err := decodeCommand(command)
+	if err != nil {
+		return err
+	}
+	return m.validateLevel(c)
+}
+
+func (m *StateMachine) applyDecoded(index uint64, c *command) []byte {
+	if err := m.validateLevel(c); err != nil {
 		return encodeError(err)
 	}
 	switch c.kind {
@@ -87,9 +149,33 @@ func (m *StateMachine) Apply(index uint64, cmd []byte) []byte {
 		return m.revokeLease(index, c.leaseID)
 	case kindLeaseTick:
 		return m.tickLeases(index)
+	case kindActivateCompatibility:
+		return encodeError(ErrMembershipChanged)
 	default: // kindTxn; decodeCommand admits nothing else
 		return m.applyTxn(index, c.txn)
 	}
+}
+
+func (m *StateMachine) validateLevel(c *command) error {
+	required := CompatibilityLevelBase
+	switch c.kind {
+	case kindRegister, kindSessionTxn:
+		required = CompatibilityLevelSessions
+	case kindLeaseGrant, kindLeaseKeep, kindLeaseDrop, kindLeaseTick:
+		required = CompatibilityLevelLeases
+	case kindTxn:
+		for _, ops := range [][]Op{c.txn.Success, c.txn.Failure} {
+			for _, op := range ops {
+				if op.Type == OpPutLease {
+					required = CompatibilityLevelLeases
+				}
+			}
+		}
+	}
+	if m.compatibilityLevel < required {
+		return ErrFeatureInactive
+	}
+	return nil
 }
 
 func (m *StateMachine) applyTxn(index uint64, t *Txn) []byte {
@@ -220,8 +306,27 @@ const smSnapshotVersion = 4
 
 // Snapshot serializes the state as of the last Apply.
 func (m *StateMachine) Snapshot() ([]byte, error) {
-	e := &enc{b: []byte{smSnapshotVersion}}
-	e.bytes(m.store.Snapshot())
+	if m.compatibilityLevel == CompatibilityLevelBase {
+		return m.store.snapshotV1()
+	}
+	version := byte(smSnapshotVersion)
+	includeLeases := true
+	storeData := m.store.Snapshot()
+	if m.compatibilityLevel == CompatibilityLevelSessions {
+		version = 2
+		includeLeases = false
+		var err error
+		storeData, err = m.store.snapshotV1()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return m.snapshotEnvelope(version, storeData, includeLeases), nil
+}
+
+func (m *StateMachine) snapshotEnvelope(version byte, storeData []byte, includeLeases bool) []byte {
+	e := &enc{b: []byte{version}}
+	e.bytes(storeData)
 	ids := make([]uint64, 0, len(m.sessions))
 	for id := range m.sessions {
 		ids = append(ids, id)
@@ -243,19 +348,21 @@ func (m *StateMachine) Snapshot() ([]byte, error) {
 			e.bytes(s.res)
 		}
 	}
-	ids = ids[:0]
-	for id := range m.leases {
-		ids = append(ids, id)
+	if includeLeases {
+		ids = ids[:0]
+		for id := range m.leases {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		e.uv(uint64(len(ids)))
+		for _, id := range ids {
+			l := m.leases[id]
+			e.uv(id)
+			e.uv(l.ttl)
+			e.uv(l.remaining)
+		}
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	e.uv(uint64(len(ids)))
-	for _, id := range ids {
-		l := m.leases[id]
-		e.uv(id)
-		e.uv(l.ttl)
-		e.uv(l.remaining)
-	}
-	return e.b, nil
+	return e.b
 }
 
 // Hash is a digest of everything Apply can influence (store and sessions), for
@@ -286,6 +393,7 @@ func (m *StateMachine) Restore(data []byte) error {
 		m.store.replaceFromQuiet(ns)
 		m.sessions = map[uint64]*session{}
 		m.leases = map[uint64]*lease{}
+		m.compatibilityLevel = CompatibilityLevelBase
 		m.store.notifyWatchers()
 		return nil
 	}
@@ -316,6 +424,11 @@ func (m *StateMachine) Restore(data []byte) error {
 	m.store.replaceFromQuiet(ns)
 	m.sessions = sessions
 	m.leases = leases
+	if v == 2 {
+		m.compatibilityLevel = CompatibilityLevelSessions
+	} else {
+		m.compatibilityLevel = CompatibilityLevelLeases
+	}
 	m.store.notifyWatchers()
 	return nil
 }

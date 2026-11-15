@@ -2,26 +2,27 @@
 
 ## Current status
 
-Rolling upgrades are not supported yet. Do not mix binaries that have different
-Raft RPC envelope, command, or state-machine snapshot support in one cluster.
-The RPC envelope currently rejects any version other than its own. KV-enabled
-nodes now report their supported envelope and command format levels, their
-snapshot write version, and (in compatibility report v2) their readable
-snapshot versions through `RemoteClient.Compatibility`; this is inventory only,
-not a cluster activation barrier. Older nodes that do not implement the report
-are returned as unknown. Report v1 peers have no reader-version list and must
-be treated as incomplete. `RemoteClient.CheckCompatibility` compares a proposed
-target against the observed membership, including learners, and reports a
-membership change during the check. It is still a read-only preflight and does
-not lock membership or activate a format. The KV
-state machine can read several older snapshot formats, but an older binary
-cannot necessarily read a snapshot written by a newer one. New command kinds
-such as session and lease commands also cannot be assumed to have identical
-effects on older binaries.
+General mixed-version rolling upgrades are not yet release-supported. The RPC
+envelope currently rejects any version other than its own. KV-enabled nodes
+report supported and active feature levels, command support, snapshot write
+version, and readable snapshot versions through `RemoteClient.Compatibility`.
+`RemoteClient.CheckCompatibility` checks every current voter and learner and
+detects membership changes across its reads. `RemoteClient.ActivateCompatibility`
+then commits a replicated activation command bound to that exact membership;
+stale membership is rejected at apply time. New-only commands are rejected
+before activation, and snapshot writes stay at the older format until the
+matching feature level is active. Older nodes that do not implement report v3
+are treated as unknown and fail preflight.
 
-This is a release blocker for the rolling-upgrade requirement in
-[`REQUIREMENTS.md`](REQUIREMENTS.md). The fact that a particular upgrade passes
-the current tests is not enough to establish compatibility.
+This closes the local activation-barrier gap, but it does not establish general
+N to N+1 compatibility. In particular, the current evidence does not cover
+mixed-binary transport, durable Raft state, or the complete operational rollout
+and rollback procedure. Do not mix binaries in production based only on this
+barrier or on the current test suite.
+
+The remaining items below are release blockers for the rolling-upgrade
+requirement in [`REQUIREMENTS.md`](REQUIREMENTS.md). Passing the current tests
+is not enough to establish compatibility.
 
 ## Required compatibility contract
 
@@ -36,9 +37,10 @@ compatibility independently for:
 - **Durable Raft state:** whether WAL, hard state, membership metadata, and
   internal snapshots remain readable across the upgrade.
 
-Compatibility must be a cluster decision. A node-local setting is insufficient:
-different settings on replicas can make the same committed command produce
-different state.
+Compatibility must be a cluster decision. The current activation level is
+replicated, and the activation command checks the membership view at apply time.
+Membership admission after activation still needs a server-enforced capability
+check so an unsupported new member cannot join and apply future commands.
 
 ## Required rollout protocol
 
@@ -48,15 +50,15 @@ phases:
 1. **Upgrade binaries while holding the old compatibility level.** New binaries
    must continue to read and write the old command and snapshot formats during
    this phase. New-only commands and formats remain disabled.
-2. **Establish a replicated activation barrier.** The cluster records the
-   minimum supported compatibility level and the membership configuration at
-   which it was established. Every current voter and learner must report
-   support, because learners also apply committed commands and snapshots.
+2. **Establish a replicated activation barrier.** Implemented by
+   `RemoteClient.ActivateCompatibility`: every current voter and learner must
+   report support, and the committed command is rejected if membership changed
+   since preflight.
 3. **Enable the new level by committed entry.** Every replica applies the same
    activation entry before new command kinds or snapshot formats are emitted.
-4. **Define downgrade behavior.** Before activation, a binary rollback must be
-   safe. After activation, either provide an explicit downgrade conversion or
-   reject downgrade before opening durable state; never silently guess.
+4. **Define downgrade behavior.** Preflight rejects a target below an already
+   active level. A complete release still needs an operator-tested rollback
+   procedure covering durable state and snapshot conversion.
 
 Membership changes and compatibility activation must be serialized. Adding a
 voter during activation must not let a voter without the required support enter
@@ -70,10 +72,13 @@ the active configuration.
   identically by every member after activation.
 - Snapshot and durable-state fixtures from N are opened by N+1; downgrade tests
   cover both pre-activation and post-activation behavior.
+- Membership admission enforces capability checks after activation, regardless
+  of whether membership changes come through the remote client or embedded API.
 - The operator procedure names the activation point and states when rollback
   stops being safe.
 
-Until those pieces exist, use a full-cluster stop and upgrade only when the
-cluster can tolerate downtime and a verified backup is available. This is a
-conservative operational recommendation, not a claim that all storage failures
-are covered by the existing backup tests.
+Until those pieces exist, treat mixed-version rolling upgrades as unsupported.
+Use a full-cluster stop and upgrade only when the cluster can tolerate downtime
+and a verified backup is available. This is a conservative operational
+recommendation, not a claim that all storage failures are covered by the
+existing backup tests.

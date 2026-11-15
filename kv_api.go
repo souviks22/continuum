@@ -19,6 +19,12 @@ func NewKVStateMachine() *KVStateMachine { return &KVStateMachine{machine: kv.Ne
 func (s *KVStateMachine) Apply(index uint64, command []byte) []byte {
 	return s.machine.Apply(index, command)
 }
+func (s *KVStateMachine) ApplyWithMembership(index uint64, command []byte, voters, learners, votersOutgoing, learnersNext []uint64, autoLeave bool) []byte {
+	return s.machine.ApplyWithMembership(index, command, voters, learners, votersOutgoing, learnersNext, autoLeave)
+}
+func (s *KVStateMachine) ValidateCommand(command []byte) error {
+	return s.machine.ValidateCommand(command)
+}
 func (s *KVStateMachine) Snapshot() ([]byte, error) { return s.machine.Snapshot() }
 func (s *KVStateMachine) Restore(data []byte) error { return s.machine.Restore(data) }
 func (s *KVStateMachine) LeaseCount() int           { return s.machine.LeaseCount() }
@@ -77,19 +83,27 @@ const (
 )
 
 var (
-	ErrKVUnavailable    = errors.New("continuum: built-in KV state machine is not enabled")
-	ErrKVBusy           = client.ErrBusy
-	ErrKVRetryNotReady  = client.ErrRetryNotReady
-	ErrKVSessionUnknown = errors.New("continuum: client session registration outcome is unknown; transaction was not submitted")
-	ErrInvalidCommand   = kv.ErrInvalidCommand
-	ErrCompacted        = kv.ErrCompacted
-	ErrFutureRevision   = kv.ErrFutureRevision
-	ErrSessionExpired   = kv.ErrSessionExpired
-	ErrStaleRequest     = kv.ErrStaleRequest
-	ErrResultNotCached  = kv.ErrResultNotCached
-	ErrLeaseNotFound    = kv.ErrLeaseNotFound
-	ErrTooManyLeases    = kv.ErrTooManyLeases
-	ErrTooManyWatchers  = kv.ErrTooManyWatchers
+	ErrKVUnavailable     = errors.New("continuum: built-in KV state machine is not enabled")
+	ErrKVBusy            = client.ErrBusy
+	ErrKVRetryNotReady   = client.ErrRetryNotReady
+	ErrKVSessionUnknown  = errors.New("continuum: client session registration outcome is unknown; transaction was not submitted")
+	ErrInvalidCommand    = kv.ErrInvalidCommand
+	ErrCompacted         = kv.ErrCompacted
+	ErrFutureRevision    = kv.ErrFutureRevision
+	ErrSessionExpired    = kv.ErrSessionExpired
+	ErrStaleRequest      = kv.ErrStaleRequest
+	ErrResultNotCached   = kv.ErrResultNotCached
+	ErrLeaseNotFound     = kv.ErrLeaseNotFound
+	ErrTooManyLeases     = kv.ErrTooManyLeases
+	ErrTooManyWatchers   = kv.ErrTooManyWatchers
+	ErrFeatureInactive   = kv.ErrFeatureInactive
+	ErrMembershipChanged = kv.ErrMembershipChanged
+)
+
+const (
+	CompatibilityLevelBase     = kv.CompatibilityLevelBase
+	CompatibilityLevelSessions = kv.CompatibilityLevelSessions
+	CompatibilityLevelLeases   = kv.CompatibilityLevelLeases
 )
 
 func Put(key, value []byte) Txn                     { return kv.Put(key, value) }

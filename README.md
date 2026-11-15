@@ -47,9 +47,13 @@ The root `continuum` package has three entry points:
 - `NewClient(nodes, options)` routes those KV and membership operations across
   embedded nodes in one process. `NewRemoteClient(config, options)` provides the
   same client operations over TCP for applications in separate processes.
-  Remote clients can call `Compatibility` to inspect configured servers and
-  `CheckCompatibility` to compare their reported formats with a proposed
-  target. This check is advisory; rolling upgrades are not yet supported.
+  Remote clients can call `Compatibility` to inspect configured servers,
+  `CheckCompatibility` to preflight a target, and `ActivateCompatibility` to
+  commit a compatibility level after all current voters and learners pass.
+  Activation is bound to the observed membership and enables newer command
+  and snapshot formats only after the committed barrier. This API is a rollout
+  primitive; mixed-version rolling upgrades still need end-to-end release
+  validation (see [upgrade safety](docs/UPGRADES.md)).
 
 See [the remote client guide](docs/REMOTE_CLIENT.md) and the runnable examples
 for configuration and lifecycle details. The Go package documentation lists

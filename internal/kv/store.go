@@ -3,6 +3,7 @@ package kv
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -375,7 +376,22 @@ const snapshotVersion = 3
 //
 //	version u8 | revision | compactRevision | nKeys {key, nRevs {mod sub create version tomb u8, value}}
 func (s *Store) Snapshot() []byte {
-	e := &enc{b: []byte{snapshotVersion}}
+	return s.snapshotWithVersion(snapshotVersion)
+}
+
+func (s *Store) snapshotV1() ([]byte, error) {
+	for _, h := range s.keys {
+		for _, r := range h.revs {
+			if r.leaseID != 0 {
+				return nil, errors.New("kv: cannot write legacy snapshot with leased revisions")
+			}
+		}
+	}
+	return s.snapshotWithVersion(1), nil
+}
+
+func (s *Store) snapshotWithVersion(version byte) []byte {
+	e := &enc{b: []byte{version}}
 	e.uv(s.rev)
 	e.uv(s.compact)
 	e.uv(uint64(len(s.keys)))
@@ -389,7 +405,9 @@ func (s *Store) Snapshot() []byte {
 			e.uv(r.version)
 			e.bool(r.tomb)
 			e.bytes(r.value)
-			e.uv(r.leaseID)
+			if version >= 2 {
+				e.uv(r.leaseID)
+			}
 		}
 	}
 	return e.b

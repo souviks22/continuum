@@ -274,7 +274,7 @@ func Open(cfg Config) (*Node, error) {
 								}
 							}, cfg.ProposalTimeout)
 						},
-						func() error { return client.RegisterCompatibilityRPC(endpoint) },
+						func() error { return client.RegisterCompatibilityRPC(endpoint, kvSM.machine) },
 					} {
 						if openErr = register(); openErr != nil {
 							_ = raw.Stop()

@@ -56,11 +56,16 @@ type recordSM struct {
 
 type membershipRecordSM struct {
 	recordSM
-	lastMembership raftnode.AppliedMembership
+	lastMembership membershipView
 }
 
-func (s *membershipRecordSM) ApplyWithMembership(index uint64, cmd []byte, membership raftnode.AppliedMembership) []byte {
-	s.lastMembership = membership
+type membershipView struct {
+	voters, learners, votersOutgoing, learnersNext []uint64
+	autoLeave                                      bool
+}
+
+func (s *membershipRecordSM) ApplyWithMembership(index uint64, cmd []byte, voters, learners, votersOutgoing, learnersNext []uint64, autoLeave bool) []byte {
+	s.lastMembership = membershipView{voters, learners, votersOutgoing, learnersNext, autoLeave}
 	return s.Apply(index, cmd)
 }
 

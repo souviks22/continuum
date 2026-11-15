@@ -24,25 +24,28 @@ import (
 const (
 	wireVersion = 1
 
-	kindTxn        byte = 1
-	kindCompact    byte = 2
-	kindRegister   byte = 3
-	kindSessionTxn byte = 4
-	kindLeaseGrant byte = 5
-	kindLeaseKeep  byte = 6
-	kindLeaseDrop  byte = 7
-	kindLeaseTick  byte = 8
+	kindTxn                   byte = 1
+	kindCompact               byte = 2
+	kindRegister              byte = 3
+	kindSessionTxn            byte = 4
+	kindLeaseGrant            byte = 5
+	kindLeaseKeep             byte = 6
+	kindLeaseDrop             byte = 7
+	kindLeaseTick             byte = 8
+	kindActivateCompatibility byte = 9
 
-	statusOK         byte = 0
-	statusInvalid    byte = 1
-	statusCompacted  byte = 2
-	statusFutureRev  byte = 3
-	statusSession    byte = 4
-	statusStale      byte = 5
-	statusNotCached  byte = 6
-	statusLease      byte = 7
-	statusLeaseLimit byte = 8
-	maxStatus             = statusLeaseLimit
+	statusOK                byte = 0
+	statusInvalid           byte = 1
+	statusCompacted         byte = 2
+	statusFutureRev         byte = 3
+	statusSession           byte = 4
+	statusStale             byte = 5
+	statusNotCached         byte = 6
+	statusLease             byte = 7
+	statusLeaseLimit        byte = 8
+	statusFeatureInactive   byte = 9
+	statusMembershipChanged byte = 10
+	maxStatus                    = statusMembershipChanged
 )
 
 type enc struct{ b []byte }
@@ -137,13 +140,15 @@ func (d *dec) count(max int) int {
 // (the latter also session and seq); kindCompact sets compact; kindRegister
 // sets nothing.
 type command struct {
-	kind     byte
-	txn      *Txn
-	compact  uint64
-	session  uint64
-	seq      uint64
-	leaseID  uint64
-	leaseTTL uint64
+	kind               byte
+	txn                *Txn
+	compact            uint64
+	session            uint64
+	seq                uint64
+	leaseID            uint64
+	leaseTTL           uint64
+	compatibilityLevel byte
+	membershipDigest   [32]byte
 }
 
 // Encode serializes the transaction as a command, enforcing lim (the zero Limits
@@ -281,6 +286,17 @@ func encodeLeaseID(kind byte, id uint64) ([]byte, error) {
 // EncodeLeaseTick advances every active lease by one replicated time unit.
 func EncodeLeaseTick() []byte { return []byte{wireVersion, kindLeaseTick} }
 
+// EncodeActivateCompatibility creates a replicated feature activation command
+// bound to the exact Raft membership checked by the caller.
+func EncodeActivateCompatibility(level uint8, digest [32]byte) ([]byte, error) {
+	if level < CompatibilityLevelBase || level > MaxCompatibilityLevel {
+		return nil, invalid("compatibility level %d is unsupported", level)
+	}
+	e := &enc{b: []byte{wireVersion, kindActivateCompatibility, byte(level)}}
+	e.b = append(e.b, digest[:]...)
+	return e.b, nil
+}
+
 // checkCommand decodes b fully under lim; it is the single definition of a valid command.
 func checkCommand(b []byte, lim Limits) error {
 	_, err := decodeCommandLimited(b, lim)
@@ -323,6 +339,19 @@ func decodeCommandLimited(b []byte, lim Limits) (*command, error) {
 			d.fail("lease ID must be non-zero")
 		}
 	case kindLeaseTick:
+	case kindActivateCompatibility:
+		cmd.compatibilityLevel = d.u8()
+		if d.err == nil && (cmd.compatibilityLevel < CompatibilityLevelBase || cmd.compatibilityLevel > MaxCompatibilityLevel) {
+			d.fail("compatibility level %d is unsupported", cmd.compatibilityLevel)
+		}
+		if d.err == nil {
+			if len(d.b) != len(cmd.membershipDigest) {
+				d.fail("membership fingerprint must be %d bytes", len(cmd.membershipDigest))
+			} else {
+				copy(cmd.membershipDigest[:], d.b)
+				d.b = d.b[len(cmd.membershipDigest):]
+			}
+		}
 	default:
 		if d.err == nil {
 			d.fail("unknown command kind %d", cmd.kind)
@@ -484,6 +513,10 @@ func encodeError(err error) []byte {
 		if errors.Is(err, ErrTooManyLeases) {
 			status = statusLeaseLimit
 		}
+	case errors.Is(err, ErrFeatureInactive):
+		status = statusFeatureInactive
+	case errors.Is(err, ErrMembershipChanged):
+		status = statusMembershipChanged
 	}
 	e := &enc{b: []byte{wireVersion, status}}
 	e.bytes([]byte(err.Error()))
@@ -526,6 +559,10 @@ func decodeStatus(d *dec) error {
 		sentinel = ErrLeaseNotFound
 	case statusLeaseLimit:
 		sentinel = ErrTooManyLeases
+	case statusFeatureInactive:
+		sentinel = ErrFeatureInactive
+	case statusMembershipChanged:
+		sentinel = ErrMembershipChanged
 	}
 	return fmt.Errorf("%w: %s", sentinel, msg)
 }

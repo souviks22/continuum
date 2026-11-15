@@ -13,32 +13,36 @@ const compatibilityMethod = "continuum.compatibility.v1"
 // Compatibility describes the formats and command kinds supported by one
 // KV-enabled node. Reporting support does not itself activate a feature.
 type Compatibility struct {
-	RPCWireVersion             uint8
-	KVCommandVersion           uint8
-	KVSnapshotWriteVersion     uint8
-	MaxKVCommandKind           uint8
-	KVSnapshotReadVersions     []uint8
-	CompatibilityReportVersion uint8
+	RPCWireVersion              uint8
+	KVCommandVersion            uint8
+	KVSnapshotWriteVersion      uint8
+	MaxKVCommandKind            uint8
+	KVSnapshotReadVersions      []uint8
+	SupportedCompatibilityLevel uint8
+	ActiveCompatibilityLevel    uint8
+	CompatibilityReportVersion  uint8
 }
 
-func localCompatibility() Compatibility {
-	command, snapshotWrite, maxKind, snapshotRead := kv.CompatibilityFormats()
+func localCompatibility(machine *kv.StateMachine) Compatibility {
+	command, snapshotWrite, maxKind, supported, active, snapshotRead := machine.CompatibilityFormats()
 	readVersions := make([]uint8, len(snapshotRead))
 	for i, version := range snapshotRead {
 		readVersions[i] = uint8(version)
 	}
 	return Compatibility{
-		RPCWireVersion:             rpc.WireVersion,
-		KVCommandVersion:           command,
-		KVSnapshotWriteVersion:     snapshotWrite,
-		MaxKVCommandKind:           maxKind,
-		KVSnapshotReadVersions:     readVersions,
-		CompatibilityReportVersion: 2,
+		RPCWireVersion:              rpc.WireVersion,
+		KVCommandVersion:            command,
+		KVSnapshotWriteVersion:      snapshotWrite,
+		MaxKVCommandKind:            maxKind,
+		KVSnapshotReadVersions:      readVersions,
+		SupportedCompatibilityLevel: supported,
+		ActiveCompatibilityLevel:    active,
+		CompatibilityReportVersion:  3,
 	}
 }
 
 func encodeCompatibility(c Compatibility) []byte {
-	b := []byte{2, c.RPCWireVersion, c.KVCommandVersion, c.KVSnapshotWriteVersion, c.MaxKVCommandKind, byte(len(c.KVSnapshotReadVersions))}
+	b := []byte{3, c.RPCWireVersion, c.KVCommandVersion, c.KVSnapshotWriteVersion, c.MaxKVCommandKind, c.SupportedCompatibilityLevel, c.ActiveCompatibilityLevel, byte(len(c.KVSnapshotReadVersions))}
 	return append(b, c.KVSnapshotReadVersions...)
 }
 
@@ -52,28 +56,35 @@ func decodeCompatibility(b []byte) (Compatibility, error) {
 			CompatibilityReportVersion: 1,
 		}, nil
 	}
-	if len(b) < 6 || b[0] != 2 || int(b[5]) != len(b)-6 {
+	if len(b) >= 6 && b[0] == 2 && int(b[5]) == len(b)-6 {
+		readVersions := make([]uint8, len(b)-6)
+		for i, version := range b[6:] {
+			readVersions[i] = uint8(version)
+		}
+		return Compatibility{RPCWireVersion: b[1], KVCommandVersion: b[2], KVSnapshotWriteVersion: b[3], MaxKVCommandKind: b[4], KVSnapshotReadVersions: readVersions, CompatibilityReportVersion: 2}, nil
+	}
+	if len(b) < 8 || b[0] != 3 || int(b[7]) != len(b)-8 {
 		return Compatibility{}, errors.New("client: malformed compatibility response")
 	}
-	readVersions := make([]uint8, len(b)-6)
-	for i, version := range b[6:] {
+	readVersions := make([]uint8, len(b)-8)
+	for i, version := range b[8:] {
 		readVersions[i] = uint8(version)
 	}
-	return Compatibility{RPCWireVersion: b[1], KVCommandVersion: b[2], KVSnapshotWriteVersion: b[3], MaxKVCommandKind: b[4], KVSnapshotReadVersions: readVersions, CompatibilityReportVersion: 2}, nil
+	return Compatibility{RPCWireVersion: b[1], KVCommandVersion: b[2], KVSnapshotWriteVersion: b[3], MaxKVCommandKind: b[4], SupportedCompatibilityLevel: b[5], ActiveCompatibilityLevel: b[6], KVSnapshotReadVersions: readVersions, CompatibilityReportVersion: 3}, nil
 }
 
 // RegisterCompatibilityRPC reports the local formats supported by this
 // KV-enabled node. Older binaries that lack this method return ErrUnknownMethod
 // to callers, which must treat their capabilities as unknown.
-func RegisterCompatibilityRPC(endpoint *rpc.Endpoint) error {
-	if endpoint == nil {
-		return errors.New("client: RegisterCompatibilityRPC requires endpoint")
+func RegisterCompatibilityRPC(endpoint *rpc.Endpoint, machine *kv.StateMachine) error {
+	if endpoint == nil || machine == nil {
+		return errors.New("client: RegisterCompatibilityRPC requires endpoint and KV state machine")
 	}
 	return endpoint.Register(compatibilityMethod, func(_ string, request []byte) ([]byte, error) {
 		if len(request) != 0 {
 			return nil, errors.New("client: compatibility request must be empty")
 		}
-		return encodeCompatibility(localCompatibility()), nil
+		return encodeCompatibility(localCompatibility(machine)), nil
 	})
 }
 
