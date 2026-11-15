@@ -70,7 +70,12 @@ the active configuration.
 ## Evidence required before closing this gap
 
 - A mixed N/N+1 cluster test covers leader changes, writes, reads, snapshots,
-  restart, membership change, and loss of quorum during each rollout phase.
+  restart, membership change, and loss of quorum during each rollout phase. The
+  current Raft simulation exercises this sequence with a legacy state-machine
+  interface and upgraded implementation; it does not run separately built
+  release binaries or validate their transport envelope.
+- A process-level test using separately built N and N+1 binaries validates
+  transport, durable Raft state, and recovery from N-created WAL and snapshots.
 - Tests prove new-only commands are rejected before activation and applied
   identically by every member after activation.
 - Snapshot and durable-state fixtures from N are opened by N+1; downgrade tests

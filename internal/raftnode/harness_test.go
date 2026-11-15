@@ -132,8 +132,9 @@ type opts struct {
 	// the state was written.
 	fsFault float64
 	// newSM, if set, replaces the default recording state machine.
-	newSM    func() raftnode.StateMachine
-	observer raftnode.Observer
+	newSM     func() raftnode.StateMachine
+	newSMByID func(uint64) raftnode.StateMachine
+	observer  raftnode.Observer
 }
 
 type cluster struct {
@@ -222,7 +223,10 @@ func (c *cluster) boot(p *proc) {
 	p.incarnation++
 	p.clk = c.sched.NewProcessClock()
 	var sm raftnode.StateMachine
-	if c.opts.newSM != nil {
+	if c.opts.newSMByID != nil {
+		p.sm, p.alt = nil, c.opts.newSMByID(p.id)
+		sm = p.alt
+	} else if c.opts.newSM != nil {
 		p.sm, p.alt = nil, c.opts.newSM()
 		sm = p.alt
 	} else {

@@ -296,6 +296,233 @@ func TestCompatibilityActivationIsReplicatedAndBoundToCurrentMembership(t *testi
 	}
 }
 
+// legacyKVMachine models the old binary's state-machine interface: it can read
+// and write the base format but does not expose the compatibility activation
+// or command-validation hooks added by the new binary.
+type legacyKVMachine struct{ inner *kv.StateMachine }
+
+func newBaseKVStateMachine(t *testing.T) *kv.StateMachine {
+	t.Helper()
+	sm := kv.NewStateMachine()
+	if err := sm.Restore(kv.NewStore().Snapshot()); err != nil {
+		t.Fatalf("restore base snapshot: %v", err)
+	}
+	return sm
+}
+
+func (m *legacyKVMachine) Apply(index uint64, command []byte) []byte {
+	return m.inner.Apply(index, command)
+}
+func (m *legacyKVMachine) Snapshot() ([]byte, error) { return m.inner.Snapshot() }
+func (m *legacyKVMachine) Restore(data []byte) error { return m.inner.Restore(data) }
+
+func TestMixedCompatibilityRolloutAcrossRestartAndMembershipChange(t *testing.T) {
+	upgraded := map[uint64]bool{3: true}
+	newMachine := func(id uint64) raftnode.StateMachine {
+		inner := newBaseKVStateMachine(t)
+		if upgraded[id] {
+			return inner
+		}
+		return &legacyKVMachine{inner: inner}
+	}
+	c := newCluster(t, 0x726f6c6c6f7574, 3, opts{
+		snapEvery: 1, trailing: 1,
+		newSMByID: newMachine,
+	})
+	leader := c.waitLeader(30 * time.Second)
+	encodePut := func(key, value string) string {
+		cmd, err := kv.Put([]byte(key), []byte(value)).Encode(kv.Limits{})
+		if err != nil {
+			t.Fatalf("encode put: %v", err)
+		}
+		return string(cmd)
+	}
+	write := func(key, value string) {
+		t.Helper()
+		result := c.propose(c.leader(), encodePut(key, value))
+		if result.err != nil {
+			t.Fatalf("write %q: %v", key, result.err)
+		}
+		if _, err := kv.DecodeResult([]byte(result.payload)); err != nil {
+			t.Fatalf("write %q result: %v", key, err)
+		}
+	}
+	machine := func(id uint64) *kv.StateMachine {
+		switch sm := c.procs[id].alt.(type) {
+		case *legacyKVMachine:
+			return sm.inner
+		case *kv.StateMachine:
+			return sm
+		default:
+			t.Fatalf("node %d has unexpected state machine %T", id, c.procs[id].alt)
+			return nil
+		}
+	}
+	checkReplicas := func() {
+		t.Helper()
+		c.waitUntil("mixed-version replicas to apply the same state", 10*time.Second, func() bool {
+			var want [32]byte
+			first := true
+			for _, id := range c.ids {
+				p := c.procs[id]
+				if !p.live() {
+					return false
+				}
+				got := machine(id).Hash()
+				if first {
+					want, first = got, false
+				} else if got != want {
+					return false
+				}
+			}
+			return true
+		})
+	}
+
+	// N and N+1 run together at the old base feature level.
+	write("rollout/one", "old-format")
+	checkReplicas()
+	for _, id := range c.ids {
+		got, err := machine(id).Store().Range([]byte("rollout/one"), nil, kv.RangeOptions{})
+		if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "old-format" {
+			t.Fatalf("node %d mixed-version read=%+v err=%v", id, got, err)
+		}
+	}
+	if leader.node.LastSnapshotIndex() == 0 {
+		t.Fatal("mixed-version phase did not create a snapshot")
+	}
+	if got := machine(1).CompatibilityLevel(); got != kv.CompatibilityLevelBase {
+		t.Fatalf("legacy compatibility level=%d, want base", got)
+	}
+
+	// A session command remains inactive while any legacy binary is present.
+	blocked := c.propose(c.leader(), string(kv.EncodeRegister()))
+	if _, err := kv.DecodeSession([]byte(blocked.payload)); !errors.Is(err, kv.ErrFeatureInactive) {
+		t.Fatalf("pre-activation session result error=%v", err)
+	}
+	checkReplicas()
+
+	// Move leadership while the cluster is mixed and confirm writes still
+	// replicate through the old snapshot format.
+	oldLeader := c.leader().id
+	c.isolate(oldLeader)
+	withoutQuorum, err := c.proposeAsync(c.procs[oldLeader], encodePut("rollout/no-quorum", "must-not-commit"), 250*time.Millisecond)
+	if err != nil {
+		t.Fatalf("start proposal without quorum: %v", err)
+	}
+	c.run(time.Second)
+	if !withoutQuorum.done || withoutQuorum.err == nil {
+		t.Fatalf("proposal without quorum result=%+v", withoutQuorum)
+	}
+	c.waitUntil("leader change during mixed-version phase", 30*time.Second, func() bool {
+		return c.leader() != nil && c.leader().id != oldLeader
+	})
+	write("rollout/two", "leader-changed")
+	c.healAll()
+	checkReplicas()
+
+	// Upgrade old binaries one at a time by restarting them with the new
+	// implementation. Each process restores the existing on-disk snapshot.
+	for _, id := range []uint64{1, 2} {
+		c.crash(id, false, uint64(0x55504752+id))
+		upgraded[id] = true
+		c.restart(id)
+		c.waitUntil(fmt.Sprintf("upgraded node %d to recover", id), 10*time.Second, func() bool {
+			p := c.procs[id]
+			return p.live() && p.node.Health().Ready
+		})
+		checkReplicas()
+	}
+
+	// All members now run the new implementation. Bind activation to the
+	// committed configuration, then enable sessions and verify snapshot v2.
+	leader = c.leader()
+	conf := leader.node.Membership()
+	digest := kv.MembershipDigest(conf.GetVoters(), conf.GetLearners(), conf.GetVotersOutgoing(), conf.GetLearnersNext(), conf.GetAutoLeave())
+	activation, err := kv.EncodeActivateCompatibility(kv.CompatibilityLevelSessions, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activated := c.propose(leader, string(activation))
+	if _, err := kv.DecodeResult([]byte(activated.payload)); err != nil {
+		t.Fatalf("activate after rolling binary upgrade: %v", err)
+	}
+	checkReplicas()
+	register := c.propose(c.leader(), string(kv.EncodeRegister()))
+	if _, err := kv.DecodeSession([]byte(register.payload)); err != nil {
+		t.Fatalf("session after activation: %v", err)
+	}
+	checkReplicas()
+	for _, id := range c.ids {
+		snapshot, err := machine(id).Snapshot()
+		if err != nil || len(snapshot) == 0 || snapshot[0] != 2 {
+			t.Fatalf("node %d activated snapshot format=%v err=%v", id, snapshot, err)
+		}
+	}
+	activeLeader := c.leader().id
+	c.isolate(activeLeader)
+	withoutQuorum, err = c.proposeAsync(c.procs[activeLeader], encodePut("rollout/active-no-quorum", "must-not-commit"), 250*time.Millisecond)
+	if err == nil {
+		c.run(time.Second)
+		if !withoutQuorum.done || withoutQuorum.err == nil {
+			t.Fatalf("post-activation proposal without quorum result=%+v", withoutQuorum)
+		}
+	}
+	c.healAll()
+	c.waitUntil("leader change after post-activation quorum loss", 30*time.Second, func() bool {
+		return c.leader() != nil && c.leader().id != activeLeader
+	})
+	checkReplicas()
+
+	// A restarted node restores the active level, and the cluster can still
+	// change membership after activation.
+	c.crash(1, false, 0x41435449)
+	c.restart(1)
+	c.waitUntil("post-activation restart to recover", 10*time.Second, func() bool {
+		return c.procs[1].live() && c.procs[1].node.Health().Ready
+	})
+	if got := machine(1).CompatibilityLevel(); got != kv.CompatibilityLevelSessions {
+		t.Fatalf("restored active compatibility level=%d", got)
+	}
+	checkReplicas()
+
+	leader = c.leader()
+	removeID := uint64(3)
+	if leader.id == removeID {
+		removeID = 2
+	}
+	var removed bool
+	if err := leader.node.RemoveMember(removeID, time.Second, func(err error) { removed = err == nil }); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUntil("post-upgrade membership change", 10*time.Second, func() bool { return removed })
+	c.waitUntil("membership change to apply on every replica", 5*time.Second, func() bool {
+		for _, id := range []uint64{1, 2, 3} {
+			if !c.procs[id].live() || slices.Contains(c.procs[id].node.Membership().GetVoters(), removeID) {
+				return false
+			}
+		}
+		return true
+	})
+	write("rollout/after-membership", "active")
+	c.waitUntil("remaining voters to apply post-membership write", 10*time.Second, func() bool {
+		var want [32]byte
+		first := true
+		for _, id := range []uint64{1, 2, 3} {
+			if id == removeID {
+				continue
+			}
+			got := machine(id).Hash()
+			if first {
+				want, first = got, false
+			} else if got != want {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 func TestMembershipReplacesVoterThroughLearnerCatchup(t *testing.T) {
 	c := newCluster(t, 0x7265706c, 3, opts{snapEvery: 1, trailing: 1})
 	leader := c.waitLeader(30 * time.Second)
