@@ -13,36 +13,53 @@ const compatibilityMethod = "continuum.compatibility.v1"
 // Compatibility describes the formats and command kinds supported by one
 // KV-enabled node. Reporting support does not itself activate a feature.
 type Compatibility struct {
-	RPCWireVersion    uint8
-	KVCommandVersion  uint8
-	KVSnapshotVersion uint8
-	MaxKVCommandKind  uint8
+	RPCWireVersion             uint8
+	KVCommandVersion           uint8
+	KVSnapshotWriteVersion     uint8
+	MaxKVCommandKind           uint8
+	KVSnapshotReadVersions     []uint8
+	CompatibilityReportVersion uint8
 }
 
 func localCompatibility() Compatibility {
-	command, snapshot, maxKind := kv.CompatibilityFormats()
+	command, snapshotWrite, maxKind, snapshotRead := kv.CompatibilityFormats()
+	readVersions := make([]uint8, len(snapshotRead))
+	for i, version := range snapshotRead {
+		readVersions[i] = uint8(version)
+	}
 	return Compatibility{
-		RPCWireVersion:    rpc.WireVersion,
-		KVCommandVersion:  command,
-		KVSnapshotVersion: snapshot,
-		MaxKVCommandKind:  maxKind,
+		RPCWireVersion:             rpc.WireVersion,
+		KVCommandVersion:           command,
+		KVSnapshotWriteVersion:     snapshotWrite,
+		MaxKVCommandKind:           maxKind,
+		KVSnapshotReadVersions:     readVersions,
+		CompatibilityReportVersion: 2,
 	}
 }
 
 func encodeCompatibility(c Compatibility) []byte {
-	return []byte{1, c.RPCWireVersion, c.KVCommandVersion, c.KVSnapshotVersion, c.MaxKVCommandKind}
+	b := []byte{2, c.RPCWireVersion, c.KVCommandVersion, c.KVSnapshotWriteVersion, c.MaxKVCommandKind, byte(len(c.KVSnapshotReadVersions))}
+	return append(b, c.KVSnapshotReadVersions...)
 }
 
 func decodeCompatibility(b []byte) (Compatibility, error) {
-	if len(b) != 5 || b[0] != 1 {
+	if len(b) == 5 && b[0] == 1 {
+		return Compatibility{
+			RPCWireVersion:             b[1],
+			KVCommandVersion:           b[2],
+			KVSnapshotWriteVersion:     b[3],
+			MaxKVCommandKind:           b[4],
+			CompatibilityReportVersion: 1,
+		}, nil
+	}
+	if len(b) < 6 || b[0] != 2 || int(b[5]) != len(b)-6 {
 		return Compatibility{}, errors.New("client: malformed compatibility response")
 	}
-	return Compatibility{
-		RPCWireVersion:    b[1],
-		KVCommandVersion:  b[2],
-		KVSnapshotVersion: b[3],
-		MaxKVCommandKind:  b[4],
-	}, nil
+	readVersions := make([]uint8, len(b)-6)
+	for i, version := range b[6:] {
+		readVersions[i] = uint8(version)
+	}
+	return Compatibility{RPCWireVersion: b[1], KVCommandVersion: b[2], KVSnapshotWriteVersion: b[3], MaxKVCommandKind: b[4], KVSnapshotReadVersions: readVersions, CompatibilityReportVersion: 2}, nil
 }
 
 // RegisterCompatibilityRPC reports the local formats supported by this

@@ -60,13 +60,15 @@ type remoteCompatibilityPeer struct {
 // Known is false when that server predates the compatibility RPC; unknown
 // support must never be treated as compatible.
 type PeerCompatibility struct {
-	ID                uint64
-	Name              string
-	Known             bool
-	RPCWireVersion    uint8
-	KVCommandVersion  uint8
-	KVSnapshotVersion uint8
-	MaxKVCommandKind  uint8
+	ID                         uint64
+	Name                       string
+	Known                      bool
+	RPCWireVersion             uint8
+	KVCommandVersion           uint8
+	KVSnapshotWriteVersion     uint8
+	MaxKVCommandKind           uint8
+	KVSnapshotReadVersions     []uint8
+	CompatibilityReportVersion uint8
 }
 
 // NewRemoteClient opens a bounded TCP client transport, then builds the same
@@ -227,8 +229,10 @@ func (c *RemoteClient) Compatibility(ctx context.Context) ([]PeerCompatibility, 
 					reports[index].Known = true
 					reports[index].RPCWireVersion = supported.RPCWireVersion
 					reports[index].KVCommandVersion = supported.KVCommandVersion
-					reports[index].KVSnapshotVersion = supported.KVSnapshotVersion
+					reports[index].KVSnapshotWriteVersion = supported.KVSnapshotWriteVersion
 					reports[index].MaxKVCommandKind = supported.MaxKVCommandKind
+					reports[index].KVSnapshotReadVersions = append([]uint8(nil), supported.KVSnapshotReadVersions...)
+					reports[index].CompatibilityReportVersion = supported.CompatibilityReportVersion
 				}
 				remaining--
 				finish()

@@ -5,10 +5,12 @@
 Rolling upgrades are not supported yet. Do not mix binaries that have different
 Raft RPC envelope, command, or state-machine snapshot support in one cluster.
 The RPC envelope currently rejects any version other than its own. KV-enabled
-nodes now report their supported envelope, command and snapshot format levels
-through `RemoteClient.Compatibility`; this is inventory only, not a cluster
-activation barrier. Older nodes that do not implement the report are returned
-as unknown. The KV
+nodes now report their supported envelope and command format levels, their
+snapshot write version, and (in compatibility report v2) their readable
+snapshot versions through `RemoteClient.Compatibility`; this is inventory only,
+not a cluster activation barrier. Older nodes that do not implement the report
+are returned as unknown. Report v1 peers have no reader-version list and must
+be treated as incomplete. The KV
 state machine can read several older snapshot formats, but an older binary
 cannot necessarily read a snapshot written by a newer one. New command kinds
 such as session and lease commands also cannot be assumed to have identical
