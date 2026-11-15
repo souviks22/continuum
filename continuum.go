@@ -274,6 +274,7 @@ func Open(cfg Config) (*Node, error) {
 								}
 							}, cfg.ProposalTimeout)
 						},
+						func() error { return client.RegisterCompatibilityRPC(endpoint) },
 					} {
 						if openErr = register(); openErr != nil {
 							_ = raw.Stop()

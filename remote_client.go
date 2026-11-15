@@ -46,7 +46,27 @@ type RemoteClientConfig struct {
 type RemoteClient struct {
 	client     *Client
 	membership *internalClient.MembershipClient
+	endpoint   *rpc.Endpoint
+	peers      []remoteCompatibilityPeer
 	addr       net.Addr
+}
+
+type remoteCompatibilityPeer struct {
+	id   uint64
+	peer Peer
+}
+
+// PeerCompatibility describes one configured server's reported format support.
+// Known is false when that server predates the compatibility RPC; unknown
+// support must never be treated as compatible.
+type PeerCompatibility struct {
+	ID                uint64
+	Name              string
+	Known             bool
+	RPCWireVersion    uint8
+	KVCommandVersion  uint8
+	KVSnapshotVersion uint8
+	MaxKVCommandKind  uint8
 }
 
 // NewRemoteClient opens a bounded TCP client transport, then builds the same
@@ -83,12 +103,14 @@ func NewRemoteClient(cfg RemoteClientConfig, opts ClientOptions) (*RemoteClient,
 	transportPeers[cfg.Name] = cfg.ListenAddr
 	remotePeers := make([]internalClient.Peer, 0, len(cfg.Peers))
 	membershipPeers := make([]*internalClient.RemotePeer, 0, len(cfg.Peers))
+	compatibilityPeers := make([]remoteCompatibilityPeer, 0, len(cfg.Peers))
 	for id, peer := range cfg.Peers {
 		if id == 0 || id == cfg.ID || peer.Name == "" || peer.Address == "" || names[peer.Name] {
 			return nil, errors.New("continuum: remote server IDs, names and addresses must be unique and must not include the client ID")
 		}
 		names[peer.Name] = true
 		transportPeers[peer.Name] = peer.Address
+		compatibilityPeers = append(compatibilityPeers, remoteCompatibilityPeer{id: id, peer: peer})
 	}
 	loop, err := runtime.NewLoop(opts.QueueSize)
 	if err != nil {
@@ -157,10 +179,78 @@ func NewRemoteClient(cfg RemoteClientConfig, opts ClientOptions) (*RemoteClient,
 	}
 	runtimeNode := &Node{kvClient: inner, loop: loop, timeout: opts.Timeout, clock: serialClock, closeDone: make(chan struct{})}
 	wrapped := &Client{runtime: runtimeNode, loop: loop, inner: inner, closer: tcp, endpointClose: endpoint.Close, done: make(chan struct{})}
-	return &RemoteClient{client: wrapped, membership: membership, addr: tcp.Addr()}, nil
+	return &RemoteClient{client: wrapped, membership: membership, endpoint: endpoint, peers: compatibilityPeers, addr: tcp.Addr()}, nil
 }
 
 func (c *RemoteClient) Addr() net.Addr { return c.addr }
+
+// Compatibility queries each configured server for its supported RPC and KV
+// formats. Unknown-method responses identify older binaries; other query errors
+// are returned because a partial report cannot establish a cluster barrier.
+// This is an inventory API only and does not enable newer commands.
+func (c *RemoteClient) Compatibility(ctx context.Context) ([]PeerCompatibility, error) {
+	if ctx == nil {
+		return nil, errors.New("continuum: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := make(chan struct {
+		reports []PeerCompatibility
+		err     error
+	}, 1)
+	if err := c.client.loop.Post(ctx, func() {
+		reports := make([]PeerCompatibility, len(c.peers))
+		remaining := len(c.peers)
+		var queryErr error
+		finished := false
+		finish := func() {
+			if remaining == 0 && !finished {
+				finished = true
+				result <- struct {
+					reports []PeerCompatibility
+					err     error
+				}{reports, queryErr}
+			}
+		}
+		for i, target := range c.peers {
+			reports[i] = PeerCompatibility{ID: target.id, Name: target.peer.Name}
+			index := i
+			err := internalClient.QueryCompatibility(c.endpoint, target.peer.Name, c.client.runtime.timeout, func(supported internalClient.Compatibility, err error) {
+				if errors.Is(err, rpc.ErrUnknownMethod) {
+					reports[index].Known = false
+				} else if err != nil {
+					if queryErr == nil {
+						queryErr = err
+					}
+				} else {
+					reports[index].Known = true
+					reports[index].RPCWireVersion = supported.RPCWireVersion
+					reports[index].KVCommandVersion = supported.KVCommandVersion
+					reports[index].KVSnapshotVersion = supported.KVSnapshotVersion
+					reports[index].MaxKVCommandKind = supported.MaxKVCommandKind
+				}
+				remaining--
+				finish()
+			})
+			if err != nil {
+				if queryErr == nil {
+					queryErr = err
+				}
+				remaining--
+				finish()
+			}
+		}
+	}); err != nil {
+		return nil, err
+	}
+	select {
+	case out := <-result:
+		return out.reports, out.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 func (c *RemoteClient) Txn(ctx context.Context, txn Txn) (TxnResult, error) {
 	return c.client.Txn(ctx, txn)
 }
