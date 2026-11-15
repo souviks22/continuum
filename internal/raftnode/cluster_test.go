@@ -161,6 +161,62 @@ func TestMembershipRemovesVoterAndReplicatesConfState(t *testing.T) {
 	}
 }
 
+func TestMembershipAwareStateMachineReceivesAppliedConfiguration(t *testing.T) {
+	c := newCluster(t, 0x6d656d6170706c79, 3, opts{newSM: func() raftnode.StateMachine { return &membershipRecordSM{} }})
+	leader := c.waitLeader(30 * time.Second)
+	first := c.propose(leader, "before-change")
+	if first.err != nil {
+		t.Fatalf("proposal before membership change: %v", first.err)
+	}
+	c.waitUntil("all replicas to apply the first membership-aware command", 5*time.Second, func() bool {
+		for _, id := range c.ids {
+			sm := c.procs[id].alt.(*membershipRecordSM)
+			if len(sm.recs) != 1 {
+				return false
+			}
+		}
+		return true
+	})
+	for _, id := range c.ids {
+		sm := c.procs[id].alt.(*membershipRecordSM)
+		if !slices.Equal(sm.lastMembership.Voters, []uint64{1, 2, 3}) || len(sm.lastMembership.Learners) != 0 {
+			t.Fatalf("node %d saw membership %+v", id, sm.lastMembership)
+		}
+	}
+	var removed bool
+	removeID := uint64(3)
+	if leader.id == removeID {
+		removeID = 2
+	}
+	if err := leader.node.RemoveMember(removeID, time.Second, func(err error) { removed = err == nil }); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUntil("membership removal", 10*time.Second, func() bool { return removed })
+	wantVoters := []uint64{1, 2, 3}
+	wantVoters = slices.Delete(wantVoters, int(removeID-1), int(removeID))
+	c.waitUntil("all replicas to apply the updated configuration", 5*time.Second, func() bool {
+		for _, id := range c.ids {
+			if !slices.Equal(c.procs[id].node.Membership().GetVoters(), wantVoters) {
+				return false
+			}
+		}
+		return true
+	})
+	second := c.propose(c.leader(), "after-change")
+	if second.err != nil {
+		t.Fatalf("proposal after membership change: %v", second.err)
+	}
+	for _, id := range c.ids {
+		if id == removeID {
+			continue
+		}
+		sm := c.procs[id].alt.(*membershipRecordSM)
+		if !slices.Equal(sm.lastMembership.Voters, wantVoters) {
+			t.Fatalf("node %d saw stale membership %+v", id, sm.lastMembership)
+		}
+	}
+}
+
 func TestMembershipReplacesVoterThroughLearnerCatchup(t *testing.T) {
 	c := newCluster(t, 0x7265706c, 3, opts{snapEvery: 1, trailing: 1})
 	leader := c.waitLeader(30 * time.Second)

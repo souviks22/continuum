@@ -110,6 +110,24 @@ type StateMachine interface {
 	Restore(data []byte) error
 }
 
+// AppliedMembership is the Raft configuration that was active immediately
+// before a committed normal entry was applied. Slices are owned by the caller
+// and must be treated as read-only.
+type AppliedMembership struct {
+	Voters         []uint64
+	Learners       []uint64
+	VotersOutgoing []uint64
+	LearnersNext   []uint64
+	AutoLeave      bool
+}
+
+// MembershipAwareStateMachine is optional. It lets a state machine bind a
+// replicated control command to the configuration that applies it, closing
+// races between a client-side membership read and command application.
+type MembershipAwareStateMachine interface {
+	ApplyWithMembership(index uint64, cmd []byte, membership AppliedMembership) []byte
+}
+
 // Config configures a Node. Zero values select defaults where noted.
 type Config struct {
 	// ID is this member's Raft ID (non-zero).

@@ -54,6 +54,16 @@ type recordSM struct {
 	lastApplied uint64
 }
 
+type membershipRecordSM struct {
+	recordSM
+	lastMembership raftnode.AppliedMembership
+}
+
+func (s *membershipRecordSM) ApplyWithMembership(index uint64, cmd []byte, membership raftnode.AppliedMembership) []byte {
+	s.lastMembership = membership
+	return s.Apply(index, cmd)
+}
+
 func (s *recordSM) Apply(index uint64, cmd []byte) []byte {
 	if index <= s.lastApplied && s.badOrder == "" {
 		s.badOrder = fmt.Sprintf("apply index %d after %d", index, s.lastApplied)

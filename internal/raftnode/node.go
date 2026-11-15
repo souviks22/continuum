@@ -601,7 +601,12 @@ func (n *Node) apply(e *pb.Entry) error {
 			if err != nil {
 				return err
 			}
-			res := n.sm.Apply(idx, cmd)
+			var res []byte
+			if aware, ok := n.sm.(MembershipAwareStateMachine); ok {
+				res = aware.ApplyWithMembership(idx, cmd, n.appliedMembership())
+			} else {
+				res = n.sm.Apply(idx, cmd)
+			}
 			if proposer == n.cfg.ID {
 				if w, ok := n.waiters[req]; ok {
 					delete(n.waiters, req)
@@ -628,6 +633,16 @@ func (n *Node) apply(e *pb.Entry) error {
 	}
 	n.applied = idx
 	return nil
+}
+
+func (n *Node) appliedMembership() AppliedMembership {
+	return AppliedMembership{
+		Voters:         append([]uint64(nil), n.confState.GetVoters()...),
+		Learners:       append([]uint64(nil), n.confState.GetLearners()...),
+		VotersOutgoing: append([]uint64(nil), n.confState.GetVotersOutgoing()...),
+		LearnersNext:   append([]uint64(nil), n.confState.GetLearnersNext()...),
+		AutoLeave:      n.confState.GetAutoLeave(),
+	}
 }
 
 // maybeSnapshot takes a local snapshot every SnapshotEvery applied entries. The
