@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 func applyLeaseCommand(t *testing.T, sm *kv.StateMachine, index uint64, cmd []byte) []byte {

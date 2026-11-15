@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 // ErrInjected is the error the harness makes filesystem calls fail with.

@@ -52,9 +52,9 @@ import (
 
 	"go.etcd.io/raft/v3"
 
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 var (

@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/wal"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/wal"
 )
 
 // small segments: header 20 + 3 records of (20+30) = 170; the 4th rotates.

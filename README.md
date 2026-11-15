@@ -16,7 +16,7 @@ limitation.
 Requires Go. Run the repository test suite with:
 
 ```sh
-go test -race ./...
+go test -race .
 ```
 
 For a minimal durable single-node example, write a value and then reopen the

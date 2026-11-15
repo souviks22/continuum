@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/transport"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/transport"
 )
 
 var (

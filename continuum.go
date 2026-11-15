@@ -16,13 +16,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/client"
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	runtimeLoop "github.com/souviks22/continuum-go/internal/runtime"
-	"github.com/souviks22/continuum-go/internal/transport"
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/client"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/rpc"
+	runtimeLoop "github.com/souviks22/continuum/internal/runtime"
+	"github.com/souviks22/continuum/internal/transport"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 // Public error identities returned by Node methods. These aliases let callers

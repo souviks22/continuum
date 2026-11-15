@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/rpc"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/rpc"
 )
 
 const compatibilityMethod = "continuum.compatibility.v1"

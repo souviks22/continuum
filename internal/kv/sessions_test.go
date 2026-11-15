@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // raw applies pre-encoded bytes at the next log index and returns the raw result.

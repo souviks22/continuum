@@ -11,9 +11,9 @@ import (
 	pb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/sim"
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/sim"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 type eventRecorder struct{ events []raftnode.Event }

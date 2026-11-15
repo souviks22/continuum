@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/rpc"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/rpc"
 )
 
 const membershipMethod = "continuum.membership.v1"

@@ -55,7 +55,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 const (

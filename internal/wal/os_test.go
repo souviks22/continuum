@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/wal"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/wal"
 )
 
 // The same code must work on the real filesystem, not just in the simulator.

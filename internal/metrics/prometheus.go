@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 type eventKey struct {

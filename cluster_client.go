@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	internalClient "github.com/souviks22/continuum-go/internal/client"
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	runtimeLoop "github.com/souviks22/continuum-go/internal/runtime"
+	internalClient "github.com/souviks22/continuum/internal/client"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
+	runtimeLoop "github.com/souviks22/continuum/internal/runtime"
 )
 
 // ClientOptions controls a cluster-wide KV client. Zero values select bounded

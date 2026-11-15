@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 // readResult records one LinearizableRead. When the read succeeded, stale names

@@ -3,7 +3,7 @@ package client
 import (
 	"errors"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // Compact proposes replicated MVCC history compaction through revision. A

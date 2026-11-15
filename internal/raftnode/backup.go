@@ -6,9 +6,9 @@ import (
 	"path"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/atomicfile"
-	"github.com/souviks22/continuum-go/internal/snapshot"
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/atomicfile"
+	"github.com/souviks22/continuum/internal/snapshot"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 var ErrRestoreTargetNotEmpty = errors.New("raftnode: backup restore target is not empty")

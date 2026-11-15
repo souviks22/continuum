@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // env drives a state machine the way the Raft node does: commands go in as

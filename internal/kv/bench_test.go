@@ -5,7 +5,7 @@ import (
 	mrand "math/rand/v2"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // Indicative only; they exist to put numbers on the sorted-slice key index,

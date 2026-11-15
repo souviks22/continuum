@@ -13,11 +13,11 @@ import (
 	pb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/souviks22/continuum-go/internal/atomicfile"
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/snapshot"
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/wal"
+	"github.com/souviks22/continuum/internal/atomicfile"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/snapshot"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/wal"
 )
 
 // reader is a linearizable read waiting for its read index and then for the

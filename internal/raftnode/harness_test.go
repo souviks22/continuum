@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/sim"
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/vfs/vfstest"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/sim"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs/vfstest"
 )
 
 const ms = time.Millisecond

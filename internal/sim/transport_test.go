@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/sim"
+	"github.com/souviks22/continuum/internal/sim"
 )
 
 func TestTransportDeliversRawPayloadWithSender(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	mrand "math/rand/v2"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // randWrite builds a random write transaction over a tiny key space, so that

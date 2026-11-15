@@ -9,11 +9,11 @@ import (
 	"net"
 	"time"
 
-	internalClient "github.com/souviks22/continuum-go/internal/client"
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/runtime"
-	"github.com/souviks22/continuum-go/internal/transport"
+	internalClient "github.com/souviks22/continuum/internal/client"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/runtime"
+	"github.com/souviks22/continuum/internal/transport"
 )
 
 // RemoteClientConfig describes one externally reachable TCP client identity.

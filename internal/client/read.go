@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 var ErrNoReadPeers = errors.New("client: no peer has a local store and linearizable reads")

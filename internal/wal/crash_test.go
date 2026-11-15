@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/wal"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/wal"
 )
 
 var errInjected = errors.New("injected crash")

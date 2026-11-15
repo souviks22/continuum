@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 func TestPutTracksCreateModAndVersion(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go"
+	"github.com/souviks22/continuum"
 )
 
 type testMachine struct{ value string }

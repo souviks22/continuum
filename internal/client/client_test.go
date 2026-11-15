@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/sim"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/sim"
 )
 
 type fakePeer struct {

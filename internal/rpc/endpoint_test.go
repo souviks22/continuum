@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/sim"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/sim"
 )
 
 const ms = time.Millisecond

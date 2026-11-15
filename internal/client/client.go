@@ -11,10 +11,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
-	"github.com/souviks22/continuum-go/internal/rpc"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
+	"github.com/souviks22/continuum/internal/rpc"
 )
 
 // Peer is the subset of a Raft node used by Client. raftnode.Node implements it.

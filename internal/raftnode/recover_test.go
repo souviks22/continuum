@@ -10,12 +10,12 @@ import (
 
 	pb "go.etcd.io/raft/v3/raftpb"
 
-	"github.com/souviks22/continuum-go/internal/atomicfile"
-	"github.com/souviks22/continuum-go/internal/rpc"
-	"github.com/souviks22/continuum-go/internal/sim"
-	"github.com/souviks22/continuum-go/internal/snapshot"
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/vfs/vfstest"
+	"github.com/souviks22/continuum/internal/atomicfile"
+	"github.com/souviks22/continuum/internal/rpc"
+	"github.com/souviks22/continuum/internal/sim"
+	"github.com/souviks22/continuum/internal/snapshot"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs/vfstest"
 )
 
 type isSM struct{ cmds []string }

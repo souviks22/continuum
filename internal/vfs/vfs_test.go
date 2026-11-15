@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs"
 )
 
 // conformance runs against both implementations: Mem must behave like a real

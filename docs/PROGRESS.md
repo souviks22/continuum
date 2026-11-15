@@ -1,4 +1,4 @@
-# continuum-go build progress
+# continuum build progress
 
 Reference for behavior: the Python prototype (github.com/souviks22/continuum).
 Every step is checked against docs/REQUIREMENTS.md.

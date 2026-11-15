@@ -1,4 +1,4 @@
-module github.com/souviks22/continuum-go
+module github.com/souviks22/continuum
 
 go 1.26
 

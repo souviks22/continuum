@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/rpc"
+	"github.com/souviks22/continuum/internal/rpc"
 )
 
 func mustEncode(t *testing.T, m rpc.Message) []byte {

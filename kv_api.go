@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/souviks22/continuum-go/internal/client"
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/client"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // KVStateMachine is Continuum's built-in deterministic MVCC state machine.

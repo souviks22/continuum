@@ -3,9 +3,9 @@ package client
 import (
 	"errors"
 
-	"github.com/souviks22/continuum-go/internal/clock"
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 // WatchHandle is a cancellable client watch. Ready means the linearizable

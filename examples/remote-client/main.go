@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/souviks22/continuum-go"
+	"github.com/souviks22/continuum"
 )
 
 const (

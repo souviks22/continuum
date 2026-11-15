@@ -5,7 +5,7 @@ import (
 	"errors"
 	"hash/crc32"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 var errSessionState = errors.New("client: invalid session state")

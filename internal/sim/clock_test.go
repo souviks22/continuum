@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/sim"
+	"github.com/souviks22/continuum/internal/sim"
 )
 
 func TestClockStartsAtGivenTime(t *testing.T) {

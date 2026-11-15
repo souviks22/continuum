@@ -7,9 +7,9 @@ import (
 	"hash/crc32"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/atomicfile"
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/vfs/vfstest"
+	"github.com/souviks22/continuum/internal/atomicfile"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs/vfstest"
 )
 
 const name = "d/state"

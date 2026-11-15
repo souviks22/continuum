@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/metrics"
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/metrics"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 func TestPrometheusExporterUsesBoundedLabelsAndPublishesHealth(t *testing.T) {

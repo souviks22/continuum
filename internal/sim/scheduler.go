@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/clock"
+	"github.com/souviks22/continuum/internal/clock"
 )
 
 // Unbounded passed as maxSteps to RunUntilIdle disables the step limit.

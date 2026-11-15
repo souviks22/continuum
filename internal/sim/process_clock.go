@@ -3,7 +3,7 @@ package sim
 import (
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/clock"
+	"github.com/souviks22/continuum/internal/clock"
 )
 
 var _ clock.Clock = (*ProcessClock)(nil)

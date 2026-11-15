@@ -3,8 +3,8 @@ package client
 import (
 	"errors"
 
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 type leaseRequest struct {

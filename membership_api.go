@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 // MembershipState is the node's locally applied Raft membership. Slices are

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/kv"
+	"github.com/souviks22/continuum/internal/kv"
 )
 
 // model is a deliberately naive reference implementation of the store's

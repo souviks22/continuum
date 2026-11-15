@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/souviks22/continuum-go/internal/kv"
-	"github.com/souviks22/continuum-go/internal/raftnode"
+	"github.com/souviks22/continuum/internal/kv"
+	"github.com/souviks22/continuum/internal/raftnode"
 )
 
 // auditLog records every (index, command, result) that any replica, in any

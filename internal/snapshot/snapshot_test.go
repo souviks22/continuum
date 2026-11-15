@@ -6,9 +6,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/souviks22/continuum-go/internal/snapshot"
-	"github.com/souviks22/continuum-go/internal/vfs"
-	"github.com/souviks22/continuum-go/internal/vfs/vfstest"
+	"github.com/souviks22/continuum/internal/snapshot"
+	"github.com/souviks22/continuum/internal/vfs"
+	"github.com/souviks22/continuum/internal/vfs/vfstest"
 )
 
 const dir = "snaps"

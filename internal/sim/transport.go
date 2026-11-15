@@ -3,7 +3,7 @@ package sim
 import (
 	"fmt"
 
-	"github.com/souviks22/continuum-go/internal/transport"
+	"github.com/souviks22/continuum/internal/transport"
 )
 
 var _ transport.Transport = (*Transport)(nil)
