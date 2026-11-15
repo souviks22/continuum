@@ -10,7 +10,10 @@ snapshot write version, and (in compatibility report v2) their readable
 snapshot versions through `RemoteClient.Compatibility`; this is inventory only,
 not a cluster activation barrier. Older nodes that do not implement the report
 are returned as unknown. Report v1 peers have no reader-version list and must
-be treated as incomplete. The KV
+be treated as incomplete. `RemoteClient.CheckCompatibility` compares a proposed
+target against the observed membership, including learners, and reports a
+membership change during the check. It is still a read-only preflight and does
+not lock membership or activate a format. The KV
 state machine can read several older snapshot formats, but an older binary
 cannot necessarily read a snapshot written by a newer one. New command kinds
 such as session and lease commands also cannot be assumed to have identical
@@ -47,8 +50,8 @@ phases:
    this phase. New-only commands and formats remain disabled.
 2. **Establish a replicated activation barrier.** The cluster records the
    minimum supported compatibility level and the membership configuration at
-   which it was established. Activation is allowed only after every current
-   voter reports support. Learners do not count until promoted.
+   which it was established. Every current voter and learner must report
+   support, because learners also apply committed commands and snapshots.
 3. **Enable the new level by committed entry.** Every replica applies the same
    activation entry before new command kinds or snapshot formats are emitted.
 4. **Define downgrade behavior.** Before activation, a binary rollback must be
