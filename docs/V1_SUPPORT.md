@@ -63,17 +63,20 @@ The Go API will be treated as stable only after v1.0.0. Preview versions do
 not carry an API or data compatibility promise.
 
 Rolling upgrades are a required project capability, but they are **not
-currently generally supported**. A tested historical N/N+1 pair is evidence
-only for that pair. Before v1 is called stable, the project must define the
-supported upgrade and rollback policy, validate transport, commands, snapshots
-and durable Raft state for the initial supported pair, and publish the exact
-procedure. Do not infer compatibility for an unlisted pair.
+generally supported across arbitrary releases**. The process matrix now
+validates the published `v0.1.0-preview.1` to release-candidate application
+source at commit
+`c36fc27c648f6752fd9ffb9ed80cdfed38b088ff`, including a preview-created
+snapshot, sequential node replacement, rollback before activation, and
+post-rollout preflight/activation. This is the only pair established for the
+initial v1 path. Future pairs need the same matrix; do not infer compatibility
+for an unlisted pair.
 
 ## Blockers before this becomes an effective contract
 
-- Rerun the preview-to-stable upgrade matrix against the exact immutable v1
-  release candidate and publish the tested pair as the only supported upgrade
-  path until more release pairs pass the same matrix.
+- Keep the final v1 release's production Go source, `go.mod`, and `go.sum`
+  identical to the tested candidate revision above. If any of those change,
+  rerun the preview upgrade matrix before release.
 
 Capacity and performance are intentionally qualitative in v1; the release
 claim is limited to small coordination datasets with no numeric service-level

@@ -22,18 +22,22 @@ evidence for that revision pair, not a guarantee for future releases. The same
 test verifies that N can recover before activation and refuses N recovery after
 activation. Do not mix binaries in production based only on this test.
 
-A second process-level check builds the published `v0.1.0-preview.1` tag and the
-current tree. It writes through a preview-created snapshot, rolls members to the
-current tree one at a time, tests rollback before activation, and activates only
-after every member reports compatible support. This is evidence for the
-preview-to-current pair only. Run it with:
+A second process-level check builds the published `v0.1.0-preview.1` tag and
+archives the release-candidate application source at commit
+`c36fc27c648f6752fd9ffb9ed80cdfed38b088ff`. It writes through a
+preview-created snapshot, rolls members to the candidate one at a time, tests
+rollback before activation, and activates only after every member reports
+compatible support. This is evidence for that exact preview-to-candidate pair
+only. Run it with:
 
 ```sh
 CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 go test ./examples/cluster-process -run '^TestPublishedPreviewRollingUpgradeProcess$' -count=1
 ```
 
-Before a stable release, rerun this check with the exact release-candidate
-source. Do not infer compatibility with other release pairs.
+Before a stable release, the released application source and dependency files
+must match the tested candidate revision. If any production Go source,
+`go.mod`, or `go.sum` changes, rerun the check. Do not infer compatibility with
+other release pairs.
 
 The remaining items below are release blockers for the rolling-upgrade
 requirement in [`REQUIREMENTS.md`](REQUIREMENTS.md). Passing the current tests

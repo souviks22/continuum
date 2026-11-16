@@ -473,13 +473,14 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 }
 
 // TestPublishedPreviewRollingUpgradeProcess verifies the concrete upgrade path
-// from the published preview tag to the current tree. Set
+// from the published preview tag to an immutable release-candidate commit. Set
 // CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 to run this history-dependent process test.
 func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
 	if os.Getenv("CONTINUUM_RUN_PREVIEW_UPGRADE_TEST") != "1" {
 		t.Skip("set CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 to build the published preview and current revisions")
 	}
 	const previousRevision = "v0.1.0-preview.1"
+	const candidateRevision = "c36fc27c648f6752fd9ffb9ed80cdfed38b088ff"
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate test source")
@@ -504,8 +505,23 @@ func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
 	if output, err := untar.CombinedOutput(); err != nil {
 		t.Fatalf("extract published preview: %v\n%s", err, output)
 	}
+	candidateDir := filepath.Join(buildDir, "candidate-source")
+	if err := os.MkdirAll(candidateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidateArchive := exec.Command("git", "archive", candidateRevision)
+	candidateArchive.Dir = repoRoot
+	candidateData, err := candidateArchive.Output()
+	if err != nil {
+		t.Fatalf("read release candidate %s: %v", candidateRevision, err)
+	}
+	candidateUntar := exec.Command("tar", "-x", "-C", candidateDir)
+	candidateUntar.Stdin = bytes.NewReader(candidateData)
+	if output, err := candidateUntar.CombinedOutput(); err != nil {
+		t.Fatalf("extract release candidate: %v\n%s", err, output)
+	}
 	previousBin := filepath.Join(buildDir, "continuum-preview")
-	currentBin := filepath.Join(buildDir, "continuum-current")
+	candidateBin := filepath.Join(buildDir, "continuum-candidate")
 	build := func(dir, output string) {
 		t.Helper()
 		cmd := exec.Command("go", "build", "-o", output, "./examples/cluster-process")
@@ -515,7 +531,7 @@ func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
 		}
 	}
 	build(previousDir, previousBin)
-	build(repoRoot, currentBin)
+	build(candidateDir, candidateBin)
 
 	addresses := freeProcessAddresses(t, 4)
 	helpers := []string{
@@ -617,8 +633,8 @@ func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
 	// Replace one process at a time while writes continue, then roll the first
 	// upgraded process back before activation and confirm its data remains usable.
 	stop(1)
-	start(1, currentBin, "recover", "current-1")
-	waitForLog(t, filepath.Join(buildDir, "node-1-current-1.log"), "member 1 ready")
+	start(1, candidateBin, "recover", "candidate-1")
+	waitForLog(t, filepath.Join(buildDir, "node-1-candidate-1.log"), "member 1 ready")
 	write("written-with-one-current-node")
 	checkValue("written-with-one-current-node")
 	stop(1)
@@ -626,12 +642,12 @@ func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
 	waitForLog(t, filepath.Join(buildDir, "node-1-rollback-before-activation.log"), "member 1 ready")
 	checkValue("written-with-one-current-node")
 	stop(1)
-	start(1, currentBin, "recover", "current-1-again")
-	waitForLog(t, filepath.Join(buildDir, "node-1-current-1-again.log"), "member 1 ready")
+	start(1, candidateBin, "recover", "candidate-1-again")
+	waitForLog(t, filepath.Join(buildDir, "node-1-candidate-1-again.log"), "member 1 ready")
 	for id := uint64(2); id <= 3; id++ {
 		stop(id)
-		start(id, currentBin, "recover", fmt.Sprintf("current-%d", id))
-		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-current-%d.log", id, id)), fmt.Sprintf("member %d ready", id))
+		start(id, candidateBin, "recover", fmt.Sprintf("candidate-%d", id))
+		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-candidate-%d.log", id, id)), fmt.Sprintf("member %d ready", id))
 		write(fmt.Sprintf("written-after-upgrading-%d", id))
 		checkValue(fmt.Sprintf("written-after-upgrading-%d", id))
 	}
