@@ -42,6 +42,12 @@ Backup creates a consistent archive. The application or operator is
 responsible for storing that archive in an external location and testing its
 restore procedure.
 
+## Automated checks
+
+The GitHub Actions workflow runs formatting checks, `go test -race ./...`, and
+`go vet ./...` on Linux with the Go version from `go.mod`. The first hosted run
+passed on [`50db426`](https://github.com/souviks22/continuum/actions/runs/43881274712).
+
 ## Compatibility and upgrades
 
 The Go API will be treated as stable only after v1.0.0. Preview versions do
@@ -59,8 +65,6 @@ procedure. Do not infer compatibility for an unlisted pair.
 - Rerun the preview-to-stable upgrade matrix against the exact immutable v1
   release candidate and publish the tested pair as the only supported upgrade
   path until more release pairs pass the same matrix.
-- Get a successful hosted CI run for the supported Go version and Linux target,
-  including formatting, race tests and `go vet`.
 - Publish tested dataset, retention, and performance limits, or keep the v1
   claim narrowly scoped to small coordination workloads without numeric service
   guarantees.
