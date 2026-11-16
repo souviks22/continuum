@@ -38,6 +38,15 @@ maximum total data set size or production throughput claim. Operators must
 configure and test MVCC compaction for their retention needs; compaction is
 opt-in.
 
+V1 will make no numeric promise for total keys/bytes, throughput, latency,
+failover time, or history-retention duration. Dataset size and performance are
+deployment-specific and must be load-tested by the operator. The complete
+dataset and MVCC history reside in memory, and snapshots temporarily require
+additional memory. MVCC history is retained until an explicit or configured
+compaction advances the compact revision; `KVCompactionRetain` counts data
+revisions, not elapsed time. Configure the same compaction policy on every
+member and test its effect on historical reads and watches.
+
 Backup creates a consistent archive. The application or operator is
 responsible for storing that archive in an external location and testing its
 restore procedure.
@@ -65,9 +74,10 @@ procedure. Do not infer compatibility for an unlisted pair.
 - Rerun the preview-to-stable upgrade matrix against the exact immutable v1
   release candidate and publish the tested pair as the only supported upgrade
   path until more release pairs pass the same matrix.
-- Publish tested dataset, retention, and performance limits, or keep the v1
-  claim narrowly scoped to small coordination workloads without numeric service
-  guarantees.
+
+Capacity and performance are intentionally qualitative in v1; the release
+claim is limited to small coordination datasets with no numeric service-level
+guarantees, as stated above.
 
 Until these are closed, the project remains an experimental preview. See
 [requirements](REQUIREMENTS.md), [implementation progress](PROGRESS.md), and
