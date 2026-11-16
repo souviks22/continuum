@@ -110,11 +110,6 @@ the active configuration.
   ```
 
   The test takes about two minutes and is skipped by the default test suite.
-- An opt-in process test builds the published preview tag and the current tree
-  to verify the preview-to-current release candidate pair. It exercises
-  preview-created snapshots, sequential process replacement, pre-activation
-  rollback and the activation barrier. Run it before a stable release, then
-  repeat it against the exact immutable release candidate tag.
 - Tests prove new-only commands are rejected before activation and applied
   identically by every member after activation.
 - Downgrade tests cover both pre-activation and post-activation behavior, and
@@ -136,9 +131,12 @@ the active configuration.
   decision. An ambiguous activation error is not evidence that rollback is
   safe; verify the replicated active level and snapshot format first.
 
-The release-pair matrix still needs to be repeated for each supported N/N+1
-pair. Until that evidence exists for a pair, treat mixed-version rolling
-upgrades for that pair as unsupported. Use a full-cluster stop and upgrade only
-when the cluster can tolerate downtime and a verified backup is available.
+The preview-to-candidate matrix above has passed for the exact source revision
+it names. Repeat it if production source or dependency files change before the
+stable release. The broader release-pair matrix still needs to be repeated for
+each additional supported N/N+1 pair. Until that evidence exists for a pair,
+treat mixed-version rolling upgrades for that pair as unsupported. Use a
+full-cluster stop and upgrade only when the cluster can tolerate downtime and a
+verified backup is available.
 This is a conservative operational recommendation, not a claim that all storage
 failures are covered by the existing backup tests.
