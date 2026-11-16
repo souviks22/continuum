@@ -9,7 +9,8 @@ The project prioritizes explicit failure behavior and deterministic testing. It
 is not yet a production database: see [the requirements](docs/REQUIREMENTS.md)
 and [implementation progress](docs/PROGRESS.md) for scope and known gaps. The
 [upgrade safety note](docs/UPGRADES.md) describes the current rolling-upgrade
-limitation.
+limitation. The intended stable-release scope is tracked in the draft
+[v1 support contract](docs/V1_SUPPORT.md).
 
 ## Quick start
 
