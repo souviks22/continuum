@@ -1,16 +1,16 @@
 # Continuum
 
-Continuum is an experimental Raft-backed key-value store and embeddable Go
-library for small coordination and metadata workloads. It replicates an
-in-memory MVCC state machine across one Raft group and provides transactions,
-linearizable reads, resumable watches, leases, membership changes, and
-snapshots. Nodes can communicate in one process or over bounded TCP with
-optional mutual TLS.
+Continuum is a Raft-backed key-value store and embeddable Go library for small
+coordination and metadata workloads. It replicates an in-memory MVCC state
+machine across one Raft group and provides transactions, linearizable reads,
+resumable watches, leases, membership changes, and snapshots. Nodes can
+communicate in one process or over bounded TCP with optional mutual TLS.
 
-> **Experimental preview:** the Go API and stored data formats do not yet carry
-> a stable compatibility promise. Continuum is not a general-purpose,
-> disk-resident database. See the [v1 support draft](docs/V1_SUPPORT.md) and
-> [known requirements](docs/REQUIREMENTS.md) before adopting it.
+> **v1.0.0 stable API:** supported scope is deliberately narrow: Linux, Go 1.26
+> or newer, one Raft group, and small datasets that fit in memory. Continuum is
+> not a general-purpose, disk-resident database. Review the [v1 support
+> contract](docs/V1_SUPPORT.md) and [known requirements](docs/REQUIREMENTS.md)
+> before adopting it.
 
 ## Try it
 
@@ -30,10 +30,10 @@ it does not demonstrate failover or recovery from a damaged disk. See the
 
 ## Use as a Go module
 
-Add the preview release to your application:
+Add v1.0.0 to your application:
 
 ```sh
-go get github.com/souviks22/continuum@v0.1.0-preview.1
+go get github.com/souviks22/continuum@v1.0.0
 ```
 
 The root `continuum` package provides `Open` for an embedded node and
@@ -45,7 +45,7 @@ configuration, security, and lifecycle details.
 
 ## Scope and operational notes
 
-- The intended first stable release targets Linux, one Raft group, and small
+- The supported v1 release targets Linux, one Raft group, and small
   datasets whose complete state and MVCC history fit in memory. Snapshots
   temporarily need additional memory.
 - There is no validated total dataset size, throughput, latency, failover-time,
@@ -55,10 +55,9 @@ configuration, security, and lifecycle details.
   `InsecureLocal` is for trusted local development and tests.
 - Each node must have exclusive use of its data directory. `Open` locks it
   until the node closes; do not remove the lock file while a node is running.
-- Rolling upgrades are not generally supported across arbitrary releases. The
-  documented process test covers only `v0.1.0-preview.1` to candidate source
-  commit [`c36fc27`](https://github.com/souviks22/continuum/commit/c36fc27c648f6752fd9ffb9ed80cdfed38b088ff).
-  See [upgrade safety](docs/UPGRADES.md) before changing versions.
+- Rolling upgrades are not supported across arbitrary releases. The documented
+  process test covers only `v0.1.0-preview.1` to the v1.0.0 application source;
+  see [upgrade safety](docs/UPGRADES.md) before changing versions.
 
 ## Development
 
@@ -71,4 +70,4 @@ go vet ./...
 ```
 
 More detail is in [implementation progress](docs/PROGRESS.md),
-[requirements](docs/REQUIREMENTS.md), and the [draft v1 support contract](docs/V1_SUPPORT.md).
+[requirements](docs/REQUIREMENTS.md), and the [v1 support contract](docs/V1_SUPPORT.md).

@@ -1,8 +1,7 @@
-# Proposed v1 support contract
+# v1 support contract
 
-**Status: draft.** This document defines the intended scope for a stable v1
-release. It is not a support promise yet; the blockers at the end must be
-resolved before Continuum is described as stable.
+**Status: effective for v1.0.0.** This contract defines the supported workload,
+platform, topology, and compatibility scope for the stable Go API.
 
 ## Intended workload
 
@@ -59,8 +58,10 @@ passed on [`50db426`](https://github.com/souviks22/continuum/actions/runs/438812
 
 ## Compatibility and upgrades
 
-The Go API will be treated as stable only after v1.0.0. Preview versions do
-not carry an API or data compatibility promise.
+The exported Go API is stable for the v1 major version. Preview versions do not
+carry an API or data compatibility promise. Data compatibility and rolling
+upgrades are supported only for the explicitly tested release pair below; do
+not infer support for other pairs.
 
 Rolling upgrades are a required project capability, but they are **not
 generally supported across arbitrary releases**. The process matrix now
@@ -72,16 +73,15 @@ post-rollout preflight/activation. This is the only pair established for the
 initial v1 path. Future pairs need the same matrix; do not infer compatibility
 for an unlisted pair.
 
-## Blockers before this becomes an effective contract
+## Release basis
 
-- Keep the final v1 release's production Go source, `go.mod`, and `go.sum`
-  identical to the tested candidate revision above. If any of those change,
-  rerun the preview upgrade matrix before release.
+The v1.0.0 release uses the same production Go source, `go.mod`, and `go.sum` as
+the tested candidate revision above. Re-run the preview upgrade matrix before
+release if any of those files change.
 
 Capacity and performance are intentionally qualitative in v1; the release
 claim is limited to small coordination datasets with no numeric service-level
 guarantees, as stated above.
 
-Until these are closed, the project remains an experimental preview. See
-[requirements](REQUIREMENTS.md), [implementation progress](PROGRESS.md), and
-[upgrade safety](UPGRADES.md) for the detailed evidence and known limitations.
+See [requirements](REQUIREMENTS.md), [implementation progress](PROGRESS.md),
+and [upgrade safety](UPGRADES.md) for detailed evidence and known limitations.

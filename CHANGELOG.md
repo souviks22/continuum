@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.0.0 — Stable API release
+
+The first stable Go API release of Continuum. The API is stable for the v1
+major version within the supported scope in [the v1 support
+contract](docs/V1_SUPPORT.md).
+
+### Supported scope
+
+- Go 1.26 or newer on Linux.
+- One Raft group for small coordination and metadata datasets held in memory.
+- Embedded nodes or separate-process TCP deployments; use TLS/mTLS for remote
+  deployments.
+- The tested rolling-upgrade path from `v0.1.0-preview.1` to this release.
+
+### Limitations
+
+- Other operating systems, arbitrary cluster sizes, and datasets larger than
+  available memory are outside the supported scope.
+- There are no numeric capacity, throughput, latency, failover-time, or
+  retention guarantees.
+- Rolling upgrades between other release pairs are not supported unless that
+  exact pair passes the documented compatibility matrix.
+- Preview releases do not carry API or data compatibility promises.
+
+### Verification
+
+The release revision passed hosted Linux Go 1.26 CI, including formatting,
+`go test -race ./...`, and `go vet ./...`. The pinned preview-to-candidate
+process matrix and full local race suite also passed; production Go source and
+dependency files match the tested candidate revision.
+
 ## v0.1.0-preview.1 — Experimental preview
 
 This is the first public preview of Continuum, an experimental Raft-backed
