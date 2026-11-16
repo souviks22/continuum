@@ -14,11 +14,13 @@ before activation, and snapshot writes stay at the older format until the
 matching feature level is active. Older nodes that do not implement report v3
 are treated as unknown and fail preflight.
 
-This closes the local activation-barrier gap, but it does not establish general
-N to N+1 compatibility. In particular, the current evidence does not cover
-mixed-binary transport, durable Raft state, or the complete operational rollout
-and rollback procedure. Do not mix binaries in production based only on this
-barrier or on the current test suite.
+The test suite now includes a process-level check between historical revision
+`49fd507` (the N baseline) and the current tree (N+1). It verifies mixed-binary
+TCP operation, rejects preflight while N members are present, forces N to write
+snapshots, and recovers N data with N+1 while upgrading members in place. This is
+evidence for that revision pair, not a guarantee for future releases. Rollback
+and the complete operator procedure remain unverified. Do not mix binaries in
+production based only on this test.
 
 The remaining items below are release blockers for the rolling-upgrade
 requirement in [`REQUIREMENTS.md`](REQUIREMENTS.md). Passing the current tests
@@ -74,12 +76,20 @@ the active configuration.
   current Raft simulation exercises this sequence with a legacy state-machine
   interface and upgraded implementation; it does not run separately built
   release binaries or validate their transport envelope.
-- A process-level test using separately built N and N+1 binaries validates
-  transport, durable Raft state, and recovery from N-created WAL and snapshots.
+- An opt-in process test builds revision `49fd507` and the current tree as
+  separate binaries, then tests mixed TCP traffic and recovery from N-created
+  snapshots and WAL during an in-place upgrade. Run it from a full-history
+  checkout with:
+
+  ```sh
+  CONTINUUM_RUN_MIXED_REVISION_TEST=1 go test ./examples/cluster-process -run '^TestMixedRevisionRollingUpgradeProcess$' -count=1
+  ```
+
+  The test takes about two minutes and is skipped by the default test suite.
 - Tests prove new-only commands are rejected before activation and applied
   identically by every member after activation.
-- Snapshot and durable-state fixtures from N are opened by N+1; downgrade tests
-  cover both pre-activation and post-activation behavior.
+- Downgrade tests cover both pre-activation and post-activation behavior, and
+  the process test must be repeated for each release pair before supporting it.
 - Broader mixed-version membership tests still need to cover capability changes
   and reconfiguration races during each rollout phase.
 - The operator procedure names the activation point and states when rollback

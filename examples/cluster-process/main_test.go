@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/souviks22/continuum"
 )
 
 func TestClusterProcessHelper(t *testing.T) {
@@ -172,6 +176,212 @@ func TestThreeProcessClusterSurvivesMemberRestart(t *testing.T) {
 			stop(id)
 		}
 	}
+}
+
+// TestMixedRevisionRollingUpgradeProcess builds the last pre-barrier revision
+// and the current revision as separate binaries, then runs them in one TCP
+// Raft cluster. Set CONTINUUM_RUN_MIXED_REVISION_TEST=1 to run this expensive,
+// history-dependent release check.
+func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
+	if os.Getenv("CONTINUUM_RUN_MIXED_REVISION_TEST") != "1" {
+		t.Skip("set CONTINUUM_RUN_MIXED_REVISION_TEST=1 to build and run both revisions")
+	}
+	const legacyRevision = "49fd507"
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test source")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join(filepath.Dir(sourceFile), "../.."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildDir := t.TempDir()
+	legacyDir := filepath.Join(buildDir, "legacy-source")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := exec.Command("git", "archive", legacyRevision)
+	archive.Dir = repoRoot
+	archiveData, err := archive.Output()
+	if err != nil {
+		t.Fatalf("read legacy revision %s: %v", legacyRevision, err)
+	}
+	untar := exec.Command("tar", "-x", "-C", legacyDir)
+	untar.Stdin = bytes.NewReader(archiveData)
+	if output, err := untar.CombinedOutput(); err != nil {
+		t.Fatalf("extract legacy source: %v\n%s", err, output)
+	}
+	legacyBin := filepath.Join(buildDir, "cluster-n")
+	currentBin := filepath.Join(buildDir, "cluster-n-plus-1")
+	build := func(dir, output string) {
+		t.Helper()
+		cmd := exec.Command("go", "build", "-o", output, "./examples/cluster-process")
+		cmd.Dir = dir
+		if result, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", dir, err, result)
+		}
+	}
+	build(legacyDir, legacyBin)
+	build(repoRoot, currentBin)
+
+	addresses := freeProcessAddresses(t, 4)
+	helpers := []string{
+		"CONTINUUM_CLUSTER_PROCESS_CLIENT_ADDR=" + addresses[0],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_1_ADDR=" + addresses[1],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_2_ADDR=" + addresses[2],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_3_ADDR=" + addresses[3],
+	}
+	dataRoot := filepath.Join(buildDir, "members")
+	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type process struct {
+		cmd *exec.Cmd
+		log *os.File
+	}
+	servers := map[uint64]*process{}
+	stop := func(id uint64) {
+		t.Helper()
+		p := servers[id]
+		if p == nil {
+			return
+		}
+		if p.cmd.ProcessState == nil {
+			if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
+				t.Fatalf("stop member %d: %v", id, err)
+			}
+			if err := p.cmd.Wait(); err != nil {
+				t.Fatalf("member %d exited with error: %v", id, err)
+			}
+		}
+		_ = p.log.Close()
+		servers[id] = nil
+	}
+	start := func(id uint64, binary, mode, suffix string) {
+		t.Helper()
+		logPath := filepath.Join(buildDir, fmt.Sprintf("node-%d-%s.log", id, suffix))
+		log, err := os.Create(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binary, "serve", fmt.Sprint(id), filepath.Join(dataRoot, fmt.Sprintf("node-%d", id)), mode)
+		cmd.Env = append(os.Environ(), helpers...)
+		cmd.Stdout, cmd.Stderr = log, log
+		if err := cmd.Start(); err != nil {
+			_ = log.Close()
+			t.Fatalf("start member %d (%s): %v", id, suffix, err)
+		}
+		servers[id] = &process{cmd: cmd, log: log}
+		t.Cleanup(func() { stop(id) })
+	}
+	for id := uint64(1); id <= 3; id++ {
+		binary := legacyBin
+		if id == 3 {
+			binary = currentBin
+		}
+		start(id, binary, "bootstrap", "initial")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	for id := uint64(1); id <= 3; id++ {
+		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-initial.log", id)), fmt.Sprintf("member %d ready", id))
+	}
+	peers := map[uint64]continuum.Peer{
+		1: {Name: memberNames[1], Address: addresses[1]},
+		2: {Name: memberNames[2], Address: addresses[2]},
+		3: {Name: memberNames[3], Address: addresses[3]},
+	}
+	remote, err := continuum.NewRemoteClient(continuum.RemoteClientConfig{
+		ID: clientID, Name: clientName, ListenAddr: addresses[0], Peers: peers, InsecureLocal: true,
+	}, continuum.ClientOptions{Timeout: 4 * time.Second, MaxAttempts: 5, ReadMaxAttempts: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Close()
+
+	reports, err := remote.Compatibility(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyReports := 0
+	for _, report := range reports {
+		if report.ID < 3 && report.CompatibilityReportVersion == 2 {
+			legacyReports++
+		}
+	}
+	if legacyReports != 2 {
+		t.Fatalf("expected two N report-v2 peers, got %+v", reports)
+	}
+	requirements, err := continuum.CompatibilityRequirementsForLevel(continuum.CompatibilityLevelLeases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := remote.CheckCompatibility(ctx, requirements)
+	if err != nil || check.Ready {
+		t.Fatalf("mixed N/N+1 preflight ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
+	}
+
+	// More than the default snapshot interval forces N to write a real on-disk
+	// state-machine snapshot while N and N+1 are members of the same cluster.
+	const snapshotWrites = 10020
+	for i := 0; i < snapshotWrites; i++ {
+		key := []byte(fmt.Sprintf("mixed/revision/%05d", i))
+		if _, err := remote.Txn(ctx, continuum.Put(key, []byte("committed-by-N+1-client"))); err != nil {
+			t.Fatalf("mixed-version write %d/%d: %v", i+1, snapshotWrites, err)
+		}
+	}
+	for id := uint64(1); id <= 3; id++ {
+		// Bootstrap creates snapshot index 1; the default interval is 10,000
+		// applied entries, so require a data-bearing snapshot beyond that point.
+		waitForSnapshotIndex(t, filepath.Join(dataRoot, fmt.Sprintf("node-%d", id), "snap"), 10001)
+	}
+	readKey := []byte(fmt.Sprintf("mixed/revision/%05d", snapshotWrites-1))
+	if got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{}); err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
+		t.Fatalf("mixed-version read before restart=%+v err=%v", got, err)
+	}
+
+	// Upgrade each N process in place. N+1 must recover its state from an N
+	// snapshot plus the durable Raft directory, while N remains in the quorum.
+	for id := uint64(1); id <= 2; id++ {
+		stop(id)
+		start(id, currentBin, "recover", "upgraded")
+		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-upgraded.log", id)), fmt.Sprintf("member %d ready", id))
+		got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
+		if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
+			t.Fatalf("read after upgrading node %d=%+v err=%v", id, got, err)
+		}
+	}
+	check, err = remote.CheckCompatibility(ctx, requirements)
+	if err != nil || !check.Ready {
+		t.Fatalf("post-upgrade preflight ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
+	}
+	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
+		t.Fatalf("activation after every process runs N+1: %v", err)
+	}
+	if _, err := remote.Txn(ctx, continuum.Put([]byte("mixed/after-activation"), []byte("ok"))); err != nil {
+		t.Fatalf("write after activation: %v", err)
+	}
+	for id := uint64(1); id <= 3; id++ {
+		stop(id)
+	}
+}
+
+func waitForSnapshotIndex(t *testing.T, dir string, minimum uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		files, _ := filepath.Glob(filepath.Join(dir, "snap-*.snap"))
+		for _, file := range files {
+			name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(file), "snap-"), ".snap")
+			index, err := strconv.ParseUint(name, 10, 64)
+			if err == nil && index >= minimum {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "snap-*.snap"))
+	t.Fatalf("no N-created Raft snapshot at index >= %d in %s: %v", minimum, dir, files)
 }
 
 func freeProcessAddresses(t *testing.T, count int) []string {
