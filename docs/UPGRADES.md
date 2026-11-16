@@ -22,6 +22,19 @@ evidence for that revision pair, not a guarantee for future releases. The same
 test verifies that N can recover before activation and refuses N recovery after
 activation. Do not mix binaries in production based only on this test.
 
+A second process-level check builds the published `v0.1.0-preview.1` tag and the
+current tree. It writes through a preview-created snapshot, rolls members to the
+current tree one at a time, tests rollback before activation, and activates only
+after every member reports compatible support. This is evidence for the
+preview-to-current pair only. Run it with:
+
+```sh
+CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 go test ./examples/cluster-process -run '^TestPublishedPreviewRollingUpgradeProcess$' -count=1
+```
+
+Before a stable release, rerun this check with the exact release-candidate
+source. Do not infer compatibility with other release pairs.
+
 The remaining items below are release blockers for the rolling-upgrade
 requirement in [`REQUIREMENTS.md`](REQUIREMENTS.md). Passing the current tests
 is not enough to establish compatibility.
@@ -93,6 +106,11 @@ the active configuration.
   ```
 
   The test takes about two minutes and is skipped by the default test suite.
+- An opt-in process test builds the published preview tag and the current tree
+  to verify the preview-to-current release candidate pair. It exercises
+  preview-created snapshots, sequential process replacement, pre-activation
+  rollback and the activation barrier. Run it before a stable release, then
+  repeat it against the exact immutable release candidate tag.
 - Tests prove new-only commands are rejected before activation and applied
   identically by every member after activation.
 - Downgrade tests cover both pre-activation and post-activation behavior, and

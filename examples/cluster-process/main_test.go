@@ -472,6 +472,203 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	}
 }
 
+// TestPublishedPreviewRollingUpgradeProcess verifies the concrete upgrade path
+// from the published preview tag to the current tree. Set
+// CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 to run this history-dependent process test.
+func TestPublishedPreviewRollingUpgradeProcess(t *testing.T) {
+	if os.Getenv("CONTINUUM_RUN_PREVIEW_UPGRADE_TEST") != "1" {
+		t.Skip("set CONTINUUM_RUN_PREVIEW_UPGRADE_TEST=1 to build the published preview and current revisions")
+	}
+	const previousRevision = "v0.1.0-preview.1"
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test source")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join(filepath.Dir(sourceFile), "../.."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildDir := t.TempDir()
+	previousDir := filepath.Join(buildDir, "preview-source")
+	if err := os.MkdirAll(previousDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := exec.Command("git", "archive", previousRevision)
+	archive.Dir = repoRoot
+	archiveData, err := archive.Output()
+	if err != nil {
+		t.Fatalf("read published preview %s: %v", previousRevision, err)
+	}
+	untar := exec.Command("tar", "-x", "-C", previousDir)
+	untar.Stdin = bytes.NewReader(archiveData)
+	if output, err := untar.CombinedOutput(); err != nil {
+		t.Fatalf("extract published preview: %v\n%s", err, output)
+	}
+	previousBin := filepath.Join(buildDir, "continuum-preview")
+	currentBin := filepath.Join(buildDir, "continuum-current")
+	build := func(dir, output string) {
+		t.Helper()
+		cmd := exec.Command("go", "build", "-o", output, "./examples/cluster-process")
+		cmd.Dir = dir
+		if result, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", dir, err, result)
+		}
+	}
+	build(previousDir, previousBin)
+	build(repoRoot, currentBin)
+
+	addresses := freeProcessAddresses(t, 4)
+	helpers := []string{
+		"CONTINUUM_CLUSTER_PROCESS_CLIENT_ADDR=" + addresses[0],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_1_ADDR=" + addresses[1],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_2_ADDR=" + addresses[2],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_3_ADDR=" + addresses[3],
+	}
+	dataRoot := filepath.Join(buildDir, "members")
+	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type process struct {
+		cmd *exec.Cmd
+		log *os.File
+	}
+	servers := map[uint64]*process{}
+	stop := func(id uint64) {
+		t.Helper()
+		p := servers[id]
+		if p == nil {
+			return
+		}
+		if p.cmd.ProcessState == nil {
+			if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
+				t.Fatalf("stop member %d: %v", id, err)
+			}
+			if err := p.cmd.Wait(); err != nil {
+				t.Fatalf("member %d exited with error: %v", id, err)
+			}
+		}
+		_ = p.log.Close()
+		servers[id] = nil
+	}
+	start := func(id uint64, binary, mode, suffix string) {
+		t.Helper()
+		logPath := filepath.Join(buildDir, fmt.Sprintf("node-%d-%s.log", id, suffix))
+		log, err := os.Create(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binary, "serve", fmt.Sprint(id), filepath.Join(dataRoot, fmt.Sprintf("node-%d", id)), mode)
+		cmd.Env = append(os.Environ(), helpers...)
+		cmd.Stdout, cmd.Stderr = log, log
+		if err := cmd.Start(); err != nil {
+			_ = log.Close()
+			t.Fatalf("start member %d (%s): %v", id, suffix, err)
+		}
+		servers[id] = &process{cmd: cmd, log: log}
+		t.Cleanup(func() { stop(id) })
+	}
+	for id := uint64(1); id <= 3; id++ {
+		start(id, previousBin, "bootstrap", "preview")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	for id := uint64(1); id <= 3; id++ {
+		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-preview.log", id)), fmt.Sprintf("member %d ready", id))
+	}
+	peers := map[uint64]continuum.Peer{
+		1: {Name: memberNames[1], Address: addresses[1]},
+		2: {Name: memberNames[2], Address: addresses[2]},
+		3: {Name: memberNames[3], Address: addresses[3]},
+	}
+	remote, err := continuum.NewRemoteClient(continuum.RemoteClientConfig{
+		ID: clientID, Name: clientName, ListenAddr: addresses[0], Peers: peers, InsecureLocal: true,
+	}, continuum.ClientOptions{Timeout: 4 * time.Second, MaxAttempts: 5, ReadMaxAttempts: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Close()
+	ctxKey := []byte("preview-upgrade/value")
+	write := func(value string) {
+		t.Helper()
+		if _, err := remote.Txn(ctx, continuum.Put(ctxKey, []byte(value))); err != nil {
+			t.Fatalf("write %q: %v", value, err)
+		}
+	}
+	checkValue := func(want string) {
+		t.Helper()
+		got, err := remote.Range(ctx, ctxKey, nil, continuum.RangeOptions{})
+		if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != want {
+			t.Fatalf("read value=%+v err=%v, want %q", got, err, want)
+		}
+	}
+	write("written-by-preview")
+	checkValue("written-by-preview")
+	const snapshotWrites = 10020
+	for i := 0; i < snapshotWrites; i++ {
+		key := []byte(fmt.Sprintf("preview-upgrade/snapshot/%05d", i))
+		if _, err := remote.Txn(ctx, continuum.Put(key, []byte("written-by-preview"))); err != nil {
+			t.Fatalf("preview snapshot write %d/%d: %v", i+1, snapshotWrites, err)
+		}
+	}
+	for id := uint64(1); id <= 3; id++ {
+		waitForSnapshotIndex(t, filepath.Join(dataRoot, fmt.Sprintf("node-%d", id), "snap"), 10001)
+	}
+
+	// Replace one process at a time while writes continue, then roll the first
+	// upgraded process back before activation and confirm its data remains usable.
+	stop(1)
+	start(1, currentBin, "recover", "current-1")
+	waitForLog(t, filepath.Join(buildDir, "node-1-current-1.log"), "member 1 ready")
+	write("written-with-one-current-node")
+	checkValue("written-with-one-current-node")
+	stop(1)
+	start(1, previousBin, "recover", "rollback-before-activation")
+	waitForLog(t, filepath.Join(buildDir, "node-1-rollback-before-activation.log"), "member 1 ready")
+	checkValue("written-with-one-current-node")
+	stop(1)
+	start(1, currentBin, "recover", "current-1-again")
+	waitForLog(t, filepath.Join(buildDir, "node-1-current-1-again.log"), "member 1 ready")
+	for id := uint64(2); id <= 3; id++ {
+		stop(id)
+		start(id, currentBin, "recover", fmt.Sprintf("current-%d", id))
+		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-current-%d.log", id, id)), fmt.Sprintf("member %d ready", id))
+		write(fmt.Sprintf("written-after-upgrading-%d", id))
+		checkValue(fmt.Sprintf("written-after-upgrading-%d", id))
+	}
+	reports, err := remote.Compatibility(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 3 {
+		t.Fatalf("compatibility reports after upgrade: %+v", reports)
+	}
+	firstReport := reports[0]
+	for _, report := range reports {
+		if !report.Known || report.CompatibilityReportVersion < 3 || report.SupportedCompatibilityLevel < continuum.CompatibilityLevelLeases {
+			t.Fatalf("node %d has insufficient compatibility report: %+v", report.ID, report)
+		}
+		if report.RPCWireVersion != firstReport.RPCWireVersion || report.KVCommandVersion != firstReport.KVCommandVersion || report.ActiveCompatibilityLevel != firstReport.ActiveCompatibilityLevel || report.KVSnapshotWriteVersion != firstReport.KVSnapshotWriteVersion {
+			t.Fatalf("member compatibility differs after upgrade: first=%+v member=%+v", firstReport, report)
+		}
+	}
+	requirements, err := continuum.CompatibilityRequirementsForLevel(continuum.CompatibilityLevelLeases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := remote.CheckCompatibility(ctx, requirements)
+	if err != nil || !check.Ready {
+		t.Fatalf("upgraded preview cluster preflight ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
+	}
+	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
+		t.Fatalf("activate after upgrading the full cluster: %v", err)
+	}
+	write("written-after-activation")
+	checkValue("written-after-activation")
+	for id := uint64(1); id <= 3; id++ {
+		stop(id)
+	}
+}
+
 func runMixedCandidate() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

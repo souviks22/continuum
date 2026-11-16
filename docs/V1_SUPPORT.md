@@ -56,8 +56,9 @@ procedure. Do not infer compatibility for an unlisted pair.
 
 ## Blockers before this becomes an effective contract
 
-- Complete and document the initial supported upgrade path and its release-pair
-  compatibility evidence.
+- Rerun the preview-to-stable upgrade matrix against the exact immutable v1
+  release candidate and publish the tested pair as the only supported upgrade
+  path until more release pairs pass the same matrix.
 - Add automated CI for the supported Go version and Linux target, including
   race tests and `go vet`.
 - Publish tested dataset, retention, and performance limits, or keep the v1
