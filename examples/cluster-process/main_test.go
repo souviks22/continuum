@@ -340,37 +340,51 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 		t.Fatalf("mixed-version read before restart=%+v err=%v", got, err)
 	}
 
-	// Upgrade each N process in place. N+1 must recover its state from an N
+	// Upgrade a voting N process in place. N+1 must recover its state from an N
 	// snapshot plus the durable Raft directory, while N remains in the quorum.
-	for id := uint64(1); id <= 2; id++ {
-		stop(id)
-		start(id, currentBin, "recover", "upgraded")
-		waitForLog(t, filepath.Join(buildDir, fmt.Sprintf("node-%d-upgraded.log", id)), fmt.Sprintf("member %d ready", id))
-		got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
-		if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
-			t.Fatalf("read after upgrading node %d=%+v err=%v", id, got, err)
-		}
-		if id == 1 {
-			// Before activation, the N binary can still recover the N-format
-			// snapshot plus the tail written by the N+1 process.
-			stop(id)
-			start(id, legacyBin, "recover", "rollback-before-activation")
-			waitForLog(t, filepath.Join(buildDir, "node-1-rollback-before-activation.log"), "member 1 ready")
-			got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
-			if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
-				t.Fatalf("read after pre-activation rollback=%+v err=%v", got, err)
-			}
-			stop(id)
-			start(id, currentBin, "recover", "upgraded-again")
-			waitForLog(t, filepath.Join(buildDir, "node-1-upgraded-again.log"), "member 1 ready")
-		}
+	stop(1)
+	start(1, currentBin, "recover", "upgraded")
+	waitForLog(t, filepath.Join(buildDir, "node-1-upgraded.log"), "member 1 ready")
+	got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
+	if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
+		t.Fatalf("read after upgrading node 1=%+v err=%v", got, err)
+	}
+	// Before activation, the N binary can still recover the N-format snapshot
+	// plus the tail written by the N+1 process.
+	stop(1)
+	start(1, legacyBin, "recover", "rollback-before-activation")
+	waitForLog(t, filepath.Join(buildDir, "node-1-rollback-before-activation.log"), "member 1 ready")
+	got, err = remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
+	if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
+		t.Fatalf("read after pre-activation rollback=%+v err=%v", got, err)
+	}
+	stop(1)
+	start(1, currentBin, "recover", "upgraded-again")
+	waitForLog(t, filepath.Join(buildDir, "node-1-upgraded-again.log"), "member 1 ready")
+
+	// Remove the remaining N node before activation. It stays online as an
+	// excluded candidate: it must not block the active-member preflight, but it
+	// must not be admitted again after activation.
+	if err := remote.RemoveMember(ctx, 2); err != nil {
+		t.Fatalf("remove candidate before activation: %v", err)
+	}
+	membership, err := remote.Membership(ctx)
+	if err != nil || len(membership.Voters) != 2 || membership.Voters[0] == 2 || membership.Voters[1] == 2 {
+		t.Fatalf("membership after removing candidate=%+v err=%v", membership, err)
 	}
 	check, err = remote.CheckCompatibility(ctx, requirements)
 	if err != nil || !check.Ready {
-		t.Fatalf("post-upgrade preflight ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
+		t.Fatalf("preflight with excluded legacy candidate ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
 	}
 	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
 		t.Fatalf("activation after every process runs N+1: %v", err)
+	}
+	if err := remote.AddLearner(ctx, 2); err == nil {
+		t.Fatal("active N+1 cluster admitted a candidate running N")
+	}
+	membership, err = remote.Membership(ctx)
+	if err != nil || len(membership.Learners) != 0 || len(membership.Voters) != 2 {
+		t.Fatalf("membership after rejecting old candidate=%+v err=%v", membership, err)
 	}
 	// A rollback after activation must fail before N opens the durable state:
 	// the committed activation forces snapshot format 5 on every current member.

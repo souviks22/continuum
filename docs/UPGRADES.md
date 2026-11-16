@@ -98,8 +98,12 @@ the active configuration.
 - Downgrade tests cover both pre-activation and post-activation behavior, and
   the historical process test covers both for revision `49fd507`. Repeat it
   for each release pair before supporting that pair.
-- Broader mixed-version membership tests still need to cover capability changes
-  and reconfiguration races during each rollout phase.
+- The historical process test removes the remaining N voter before activation,
+  confirms that excluded N candidate does not block preflight, and confirms it
+  cannot rejoin after activation. The deterministic Raft test also changes
+  membership after fingerprinting and verifies stale activation is rejected.
+  Repeat this matrix for every supported release pair and extend it to learner
+  promotion and quorum loss during admission.
 - The operator procedure names the activation point and states when rollback
   stops being safe. Before activation, stop N+1 and recover with N. After
   activation, do not start N: it fails on snapshot v5. Recover with N+1 or a
