@@ -571,6 +571,46 @@ func TestMembershipReplacesVoterThroughLearnerCatchup(t *testing.T) {
 	})
 }
 
+func TestLearnerPromotionWithoutQuorumRemainsUncommitted(t *testing.T) {
+	c := newCluster(t, 0x70726f6d6f7465, 3, opts{})
+	leader := c.waitLeader(30 * time.Second)
+	c.peers[4] = "n4"
+	tr, err := sim.NewTransport("n4", c.net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joining := &proc{id: 4, name: "n4", mem: vfs.NewMem(), tr: tr, joining: true, bootstrapVoters: []uint64{1, 2, 3}}
+	c.procs[4] = joining
+	c.ids = append(c.ids, 4)
+	c.installFaults(joining)
+	c.boot(joining)
+
+	var addDone bool
+	if err := leader.node.AddLearner(4, time.Second, func(err error) { addDone = err == nil }); err != nil {
+		t.Fatal(err)
+	}
+	c.waitUntil("learner addition to commit", 10*time.Second, func() bool { return addDone })
+	c.waitUntil("new learner to catch up", 10*time.Second, func() bool { return joining.node.Applied() >= leader.node.Applied() })
+
+	c.isolate(leader.id)
+	var promoteDone bool
+	var promoteErr error
+	if err := leader.node.PromoteLearner(4, 250*time.Millisecond, func(err error) {
+		promoteDone, promoteErr = true, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c.run(time.Second)
+	if !promoteDone || !errors.Is(promoteErr, raftnode.ErrResultUnknown) {
+		t.Fatalf("promotion without quorum completed=%v err=%v, want ambiguous result", promoteDone, promoteErr)
+	}
+	if slices.Contains(leader.node.Membership().GetVoters(), 4) {
+		t.Fatalf("isolated leader reported uncommitted learner as voter: %v", leader.node.Membership().GetVoters())
+	}
+	c.healAll()
+	c.run(3 * time.Second)
+}
+
 func TestMembershipTimeoutIsAmbiguousAndLateResolutionDoesNotRepeat(t *testing.T) {
 	c := newCluster(t, 0x74696d656f7574, 3, opts{})
 	leader := c.waitLeader(30 * time.Second)

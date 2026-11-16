@@ -22,15 +22,15 @@ const (
 
 var (
 	clientAddr  = "127.0.0.1:17500"
-	memberNames = map[uint64]string{1: "cluster-process-1", 2: "cluster-process-2", 3: "cluster-process-3"}
-	memberAddrs = map[uint64]string{1: "127.0.0.1:17501", 2: "127.0.0.1:17502", 3: "127.0.0.1:17503"}
+	memberNames = map[uint64]string{1: "cluster-process-1", 2: "cluster-process-2", 3: "cluster-process-3", 4: "cluster-process-4"}
+	memberAddrs = map[uint64]string{1: "127.0.0.1:17501", 2: "127.0.0.1:17502", 3: "127.0.0.1:17503", 4: "127.0.0.1:17504"}
 )
 
 func init() {
 	if addr := os.Getenv("CONTINUUM_CLUSTER_PROCESS_CLIENT_ADDR"); addr != "" {
 		clientAddr = addr
 	}
-	for id := uint64(1); id <= 3; id++ {
+	for id := uint64(1); id <= 4; id++ {
 		if addr := os.Getenv(fmt.Sprintf("CONTINUUM_CLUSTER_PROCESS_MEMBER_%d_ADDR", id)); addr != "" {
 			memberAddrs[id] = addr
 		}
@@ -47,7 +47,7 @@ func main() {
 func run(args []string) error {
 	if len(args) == 4 && args[0] == "serve" {
 		id, err := strconv.ParseUint(args[1], 10, 64)
-		if err != nil || memberNames[id] == "" {
+		if err != nil || id < 1 || id > 3 {
 			return errors.New("serve requires member ID 1, 2 or 3")
 		}
 		if args[3] != "bootstrap" && args[3] != "recover" {
@@ -112,9 +112,12 @@ func clientCommand(args []string) error {
 	defer cancel()
 	peers := make(map[uint64]continuum.Peer, len(memberNames))
 	for id, name := range memberNames {
+		if id > 3 {
+			continue
+		}
 		if args[0] == "read-node" {
 			selected, parseErr := strconv.ParseUint(args[1], 10, 64)
-			if parseErr != nil || memberNames[selected] == "" {
+			if parseErr != nil || selected < 1 || selected > 3 {
 				return errors.New("read-node requires member ID 1, 2 or 3")
 			}
 			if id != selected {

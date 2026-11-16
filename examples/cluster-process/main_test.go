@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -18,6 +20,12 @@ import (
 )
 
 func TestClusterProcessHelper(t *testing.T) {
+	if os.Getenv("CONTINUUM_MIXED_CANDIDATE_HELPER") == "1" {
+		if err := runMixedCandidate(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if os.Getenv("CONTINUUM_CLUSTER_PROCESS_HELPER") != "1" {
 		t.Skip("helper subprocess only")
 	}
@@ -213,6 +221,7 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	}
 	legacyBin := filepath.Join(buildDir, "cluster-n")
 	currentBin := filepath.Join(buildDir, "cluster-n-plus-1")
+	candidateHelperBin := filepath.Join(buildDir, "cluster-n-plus-1-test-helper")
 	build := func(dir, output string) {
 		t.Helper()
 		cmd := exec.Command("go", "build", "-o", output, "./examples/cluster-process")
@@ -223,13 +232,19 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	}
 	build(legacyDir, legacyBin)
 	build(repoRoot, currentBin)
+	helperBuild := exec.Command("go", "test", "-c", "-o", candidateHelperBin, "./examples/cluster-process")
+	helperBuild.Dir = repoRoot
+	if output, err := helperBuild.CombinedOutput(); err != nil {
+		t.Fatalf("build candidate helper: %v\n%s", err, output)
+	}
 
-	addresses := freeProcessAddresses(t, 4)
+	addresses := freeProcessAddresses(t, 5)
 	helpers := []string{
 		"CONTINUUM_CLUSTER_PROCESS_CLIENT_ADDR=" + addresses[0],
 		"CONTINUUM_CLUSTER_PROCESS_MEMBER_1_ADDR=" + addresses[1],
 		"CONTINUUM_CLUSTER_PROCESS_MEMBER_2_ADDR=" + addresses[2],
 		"CONTINUUM_CLUSTER_PROCESS_MEMBER_3_ADDR=" + addresses[3],
+		"CONTINUUM_CLUSTER_PROCESS_MEMBER_4_ADDR=" + addresses[4],
 	}
 	dataRoot := filepath.Join(buildDir, "members")
 	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
@@ -376,8 +391,20 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	if err != nil || !check.Ready {
 		t.Fatalf("preflight with excluded legacy candidate ready=%v issues=%+v err=%v", check.Ready, check.Issues, err)
 	}
-	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
-		t.Fatalf("activation after every process runs N+1: %v", err)
+	var activateErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		activateErr = remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases)
+		if activateErr == nil || !errors.Is(activateErr, continuum.ErrProposalRejected) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			activateErr = ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	if activateErr != nil {
+		t.Fatalf("activation after every process runs N+1: %v", activateErr)
 	}
 	if err := remote.AddLearner(ctx, 2); err == nil {
 		t.Fatal("active N+1 cluster admitted a candidate running N")
@@ -385,6 +412,31 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	membership, err = remote.Membership(ctx)
 	if err != nil || len(membership.Learners) != 0 || len(membership.Voters) != 2 {
 		t.Fatalf("membership after rejecting old candidate=%+v err=%v", membership, err)
+	}
+	candidateLog, err := os.Create(filepath.Join(buildDir, "node-4-candidate.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := exec.Command(candidateHelperBin, "-test.run=^TestClusterProcessHelper$")
+	candidate.Env = append(os.Environ(), "CONTINUUM_MIXED_CANDIDATE_HELPER=1", helpers[1], helpers[2], helpers[3], helpers[4], "CONTINUUM_CLUSTER_PROCESS_CANDIDATE_DATA="+filepath.Join(dataRoot, "node-4"))
+	candidate.Stdout, candidate.Stderr = candidateLog, candidateLog
+	if err := candidate.Start(); err != nil {
+		_ = candidateLog.Close()
+		t.Fatalf("start learner candidate: %v", err)
+	}
+	servers[4] = &process{cmd: candidate, log: candidateLog}
+	t.Cleanup(func() { stop(4) })
+	waitForLog(t, filepath.Join(buildDir, "node-4-candidate.log"), "candidate 4 open")
+	if err := remote.AddLearner(ctx, 4); err != nil {
+		t.Fatalf("add compatible N+1 learner: %v", err)
+	}
+	waitForLog(t, filepath.Join(buildDir, "node-4-candidate.log"), "candidate 4 ready")
+	if err := remote.PromoteLearner(ctx, 4); err != nil {
+		t.Fatalf("promote caught-up N+1 learner: %v", err)
+	}
+	membership, err = remote.Membership(ctx)
+	if err != nil || len(membership.Voters) != 3 || !containsID(membership.Voters, 4) {
+		t.Fatalf("membership after learner promotion=%+v err=%v", membership, err)
 	}
 	// A rollback after activation must fail before N opens the durable state:
 	// the committed activation forces snapshot format 5 on every current member.
@@ -418,6 +470,46 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	for id := uint64(1); id <= 3; id++ {
 		stop(id)
 	}
+}
+
+func runMixedCandidate() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	peers := make(map[uint64]continuum.Peer, 4)
+	for id, name := range memberNames {
+		peers[id] = continuum.Peer{Name: name, Address: memberAddrs[id]}
+	}
+	dataDir := os.Getenv("CONTINUUM_CLUSTER_PROCESS_CANDIDATE_DATA")
+	if dataDir == "" {
+		return fmt.Errorf("missing candidate data directory")
+	}
+	node, err := continuum.Open(continuum.Config{
+		ID: 4, Peers: peers, ListenAddr: memberAddrs[4], DataDir: dataDir,
+		StateMachine: continuum.NewKVStateMachine(), BootstrapLearner: true,
+		InitialVoters: []uint64{1, 3}, InsecureLocal: true,
+		ProposalTimeout: 3 * time.Second, TickInterval: 50 * time.Millisecond,
+		ElectionTick: 8, HeartbeatTick: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("open learner candidate: %w", err)
+	}
+	defer node.Close()
+	fmt.Println("candidate 4 open")
+	if err := waitReady(ctx, node); err != nil {
+		return err
+	}
+	fmt.Println("candidate 4 ready")
+	<-ctx.Done()
+	return nil
+}
+
+func containsID(ids []uint64, want uint64) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForSnapshotIndex(t *testing.T, dir string, minimum uint64) {
