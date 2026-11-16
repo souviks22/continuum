@@ -687,8 +687,16 @@ func TestPublicRemoteClientActivatesCompatibilityAfterPreflight(t *testing.T) {
 		t.Fatalf("activate compatibility: %v", err)
 	}
 	reports, err := remote.Compatibility(ctx)
-	if err != nil || len(reports) != 1 || reports[0].ActiveCompatibilityLevel != continuum.CompatibilityLevelLeases {
+	if err != nil || len(reports) != 1 || reports[0].ActiveCompatibilityLevel != continuum.CompatibilityLevelLeases || reports[0].KVSnapshotWriteVersion != 5 {
 		t.Fatalf("compatibility reports=%+v err=%v", reports, err)
+	}
+	downgrade, err := continuum.CompatibilityRequirementsForLevel(continuum.CompatibilityLevelSessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downgradeCheck, err := remote.CheckCompatibility(ctx, downgrade)
+	if err != nil || downgradeCheck.Ready {
+		t.Fatalf("post-activation downgrade preflight ready=%v issues=%+v err=%v", downgradeCheck.Ready, downgradeCheck.Issues, err)
 	}
 	if _, err := remote.Txn(ctx, continuum.Put([]byte("upgrade/active"), []byte("yes"))); err != nil {
 		t.Fatalf("transaction after activation: %v", err)

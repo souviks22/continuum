@@ -30,6 +30,7 @@ type StateMachine struct {
 	sessions           map[uint64]*session
 	leases             map[uint64]*lease
 	compatibilityLevel uint8
+	compatibilityFence bool
 }
 
 // NewStateMachine returns an empty state machine.
@@ -52,8 +53,11 @@ func (m *StateMachine) CompatibilityFormats() (commandVersion, snapshotWriteVers
 		snapshotWriteVersion = 2
 	default:
 		snapshotWriteVersion = smSnapshotVersion
+		if !m.compatibilityFence {
+			snapshotWriteVersion = previousSMSnapshotVersion
+		}
 	}
-	return wireVersion, snapshotWriteVersion, kindActivateCompatibility, MaxCompatibilityLevel, m.compatibilityLevel, []byte{1, 2, snapshotVersion, smSnapshotVersion}
+	return wireVersion, snapshotWriteVersion, kindActivateCompatibility, MaxCompatibilityLevel, m.compatibilityLevel, []byte{1, 2, snapshotVersion, previousSMSnapshotVersion, smSnapshotVersion}
 }
 
 // Store returns the underlying store for reads. Callers must be on the same
@@ -103,9 +107,23 @@ func (m *StateMachine) ApplyWithMembership(index uint64, cmd []byte, voters, lea
 			return encodeError(invalid("compatibility level cannot move backwards from %d to %d", m.compatibilityLevel, c.compatibilityLevel))
 		}
 		m.compatibilityLevel = c.compatibilityLevel
+		if c.compatibilityLevel >= CompatibilityLevelLeases {
+			m.compatibilityFence = true
+		}
 		return encodeResult(TxnResult{Succeeded: true, Revision: m.store.rev})
 	}
 	return m.applyDecoded(index, c)
+}
+
+// SnapshotAfterApply fences rollback to binaries that cannot read the new
+// snapshot epoch after lease-level compatibility has been activated.
+func (m *StateMachine) SnapshotAfterApply(command, result []byte) bool {
+	c, err := decodeCommand(command)
+	if err != nil || c.kind != kindActivateCompatibility || !m.compatibilityFence {
+		return false
+	}
+	_, err = DecodeResult(result)
+	return err == nil
 }
 
 // ValidateCommand rejects feature use before it can enter the Raft log while
@@ -296,20 +314,27 @@ func (m *StateMachine) applySession(index uint64, c *command) []byte {
 
 // -- snapshot ----------------------------------------------------------------
 
-// smSnapshotVersion is the state machine snapshot format: store, sessions and
-// leases. Older state-machine and bare-store snapshots remain readable.
+// smSnapshotVersion is the rollback-fenced state machine snapshot format:
+// store, sessions and leases. Older state-machine and bare-store snapshots
+// remain readable.
 //
-//	version u8 (=4) | store snapshot | sessions | leases {id ttl remaining}
+//	version u8 (=5) | store snapshot | sessions | leases {id ttl remaining}
 //
 // Sessions are written in ascending ID order so equal states give equal bytes.
-const smSnapshotVersion = 4
+const (
+	previousSMSnapshotVersion = 4
+	smSnapshotVersion         = 5
+)
 
 // Snapshot serializes the state as of the last Apply.
 func (m *StateMachine) Snapshot() ([]byte, error) {
 	if m.compatibilityLevel == CompatibilityLevelBase {
 		return m.store.snapshotV1()
 	}
-	version := byte(smSnapshotVersion)
+	version := byte(previousSMSnapshotVersion)
+	if m.compatibilityFence {
+		version = smSnapshotVersion
+	}
 	includeLeases := true
 	storeData := m.store.Snapshot()
 	if m.compatibilityLevel == CompatibilityLevelSessions {
@@ -394,18 +419,19 @@ func (m *StateMachine) Restore(data []byte) error {
 		m.sessions = map[uint64]*session{}
 		m.leases = map[uint64]*lease{}
 		m.compatibilityLevel = CompatibilityLevelBase
+		m.compatibilityFence = false
 		m.store.notifyWatchers()
 		return nil
 	}
 	d := &dec{b: data}
 	v := d.u8()
-	if v != 2 && v != smSnapshotVersion {
+	if v != 2 && v != previousSMSnapshotVersion && v != smSnapshotVersion {
 		return fmt.Errorf("kv: unsupported snapshot version %d", v)
 	}
 	storeBytes := d.bytes(len(d.b))
 	sessions := decodeSessions(d)
 	leases := map[uint64]*lease{}
-	if v == smSnapshotVersion {
+	if v == previousSMSnapshotVersion || v == smSnapshotVersion {
 		leases = decodeLeases(d)
 	}
 	if d.err == nil && len(d.b) != 0 {
@@ -426,8 +452,10 @@ func (m *StateMachine) Restore(data []byte) error {
 	m.leases = leases
 	if v == 2 {
 		m.compatibilityLevel = CompatibilityLevelSessions
+		m.compatibilityFence = false
 	} else {
 		m.compatibilityLevel = CompatibilityLevelLeases
+		m.compatibilityFence = v == smSnapshotVersion
 	}
 	m.store.notifyWatchers()
 	return nil

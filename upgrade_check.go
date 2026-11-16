@@ -45,14 +45,14 @@ func CompatibilityRequirementsForLevel(level uint8) (CompatibilityRequirements, 
 	case kv.CompatibilityLevelSessions:
 		snapshotWrite = 2
 	case kv.CompatibilityLevelLeases:
-		snapshotWrite = 4
+		snapshotWrite = 5
 	default:
 		return CompatibilityRequirements{}, fmt.Errorf("continuum: unsupported compatibility level %d", level)
 	}
 	return CompatibilityRequirements{
 		RPCWireVersion: 1, KVCommandVersion: 1, MaxKVCommandKind: 9,
 		CompatibilityLevel: level, KVSnapshotWriteVersion: snapshotWrite,
-		KVSnapshotReadVersions: []uint8{1, 2, 3, 4},
+		KVSnapshotReadVersions: []uint8{1, 2, 3, 4, 5},
 	}, nil
 }
 

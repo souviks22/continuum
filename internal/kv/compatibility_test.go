@@ -2,6 +2,7 @@ package kv_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/souviks22/continuum/internal/kv"
@@ -73,7 +74,8 @@ func TestCompatibilityActivationGatesFeaturesAndPreservesReadableSnapshots(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kv.DecodeResult(restored.ApplyWithMembership(5, activation, voters, nil, nil, nil, false)); err != nil {
+	activationResult := restored.ApplyWithMembership(5, activation, voters, nil, nil, nil, false)
+	if _, err := kv.DecodeResult(activationResult); err != nil {
 		t.Fatalf("lease activation: %v", err)
 	}
 	grant, err := kv.EncodeLeaseGrant(10)
@@ -84,7 +86,18 @@ func TestCompatibilityActivationGatesFeaturesAndPreservesReadableSnapshots(t *te
 		t.Fatalf("lease grant after activation: %v", err)
 	}
 	leaseSnapshot, err := restored.Snapshot()
-	if err != nil || leaseSnapshot[0] != 4 {
+	if err != nil || leaseSnapshot[0] != 5 {
 		t.Fatalf("lease snapshot version=%v err=%v", leaseSnapshot, err)
+	}
+	if !restored.SnapshotAfterApply(activation, activationResult) {
+		t.Fatal("lease activation did not require an immediate rollback fence snapshot")
+	}
+	restoredSnapshot := kv.NewStateMachine()
+	if err := restoredSnapshot.Restore(leaseSnapshot); err != nil || restoredSnapshot.CompatibilityLevel() != kv.CompatibilityLevelLeases {
+		t.Fatalf("fenced snapshot restore level=%d err=%v", restoredSnapshot.CompatibilityLevel(), err)
+	}
+	command, snapshotWrite, _, _, _, readable := restoredSnapshot.CompatibilityFormats()
+	if command == 0 || snapshotWrite != 5 || !slices.Contains(readable, byte(5)) {
+		t.Fatalf("fenced compatibility formats: command=%d write=%d read=%v", command, snapshotWrite, readable)
 	}
 }

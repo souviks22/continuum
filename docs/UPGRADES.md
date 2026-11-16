@@ -18,9 +18,9 @@ The test suite now includes a process-level check between historical revision
 `49fd507` (the N baseline) and the current tree (N+1). It verifies mixed-binary
 TCP operation, rejects preflight while N members are present, forces N to write
 snapshots, and recovers N data with N+1 while upgrading members in place. This is
-evidence for that revision pair, not a guarantee for future releases. Rollback
-and the complete operator procedure remain unverified. Do not mix binaries in
-production based only on this test.
+evidence for that revision pair, not a guarantee for future releases. The same
+test verifies that N can recover before activation and refuses N recovery after
+activation. Do not mix binaries in production based only on this test.
 
 The remaining items below are release blockers for the rolling-upgrade
 requirement in [`REQUIREMENTS.md`](REQUIREMENTS.md). Passing the current tests
@@ -61,9 +61,16 @@ phases:
    since preflight.
 3. **Enable the new level by committed entry.** Every replica applies the same
    activation entry before new command kinds or snapshot formats are emitted.
-4. **Define downgrade behavior.** Preflight rejects a target below an already
-   active level. A complete release still needs an operator-tested rollback
-   procedure covering durable state and snapshot conversion.
+4. **Fence downgrade after activation.** Preflight rejects a target below an
+   active level. Lease-level activation forces each member to persist snapshot
+   format v5, and `ActivateCompatibility` waits until every current voter and
+   learner reports that format. N revision `49fd507` rejects v5 during restore.
+   Before activation, rolling back a node to N remains supported by the tested
+   v4 snapshot and WAL path. After activation, restart only with a binary that
+   reads v5 or newer. If activation returns an error after proposal submission,
+   treat its outcome as unknown: inspect compatibility reports and continue
+   forward if the active level or v5 fence is visible. If the state cannot be
+   established, do not start N.
 
 Membership changes and compatibility activation must be serialized. Adding a
 voter during activation must not let a voter without the required support enter
@@ -89,11 +96,17 @@ the active configuration.
 - Tests prove new-only commands are rejected before activation and applied
   identically by every member after activation.
 - Downgrade tests cover both pre-activation and post-activation behavior, and
-  the process test must be repeated for each release pair before supporting it.
+  the historical process test covers both for revision `49fd507`. Repeat it
+  for each release pair before supporting that pair.
 - Broader mixed-version membership tests still need to cover capability changes
   and reconfiguration races during each rollout phase.
 - The operator procedure names the activation point and states when rollback
-  stops being safe.
+  stops being safe. Before activation, stop N+1 and recover with N. After
+  activation, do not start N: it fails on snapshot v5. Recover with N+1 or a
+  newer compatible build. Restoring a pre-activation backup after activation
+  loses writes committed after that backup and requires an explicit data-loss
+  decision. An ambiguous activation error is not evidence that rollback is
+  safe; verify the replicated active level and snapshot format first.
 
 Until those pieces exist, treat mixed-version rolling upgrades as unsupported.
 Use a full-cluster stop and upgrade only when the cluster can tolerate downtime

@@ -124,6 +124,12 @@ type CommandValidator interface {
 	ValidateCommand(cmd []byte) error
 }
 
+// SnapshotAfterApply is optional. It requests an immediate durable snapshot
+// after a successfully applied command, before the node processes more work.
+type SnapshotAfterApply interface {
+	SnapshotAfterApply(command, result []byte) bool
+}
+
 // Config configures a Node. Zero values select defaults where noted.
 type Config struct {
 	// ID is this member's Raft ID (non-zero).

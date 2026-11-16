@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -265,6 +266,9 @@ func (c *RemoteClient) Compatibility(ctx context.Context) ([]PeerCompatibility, 
 // ActivateCompatibility commits a compatibility level after checking every
 // current voter and learner. The committed command carries a fingerprint of
 // that membership; if configuration changes before apply, activation fails.
+// For lease-level activation, it returns only after every current member
+// reports the rollback-fenced snapshot format. Older binaries cannot restore
+// that format, so rollback to them is no longer safe after this method returns.
 func (c *RemoteClient) ActivateCompatibility(ctx context.Context, level uint8) error {
 	requirements, err := CompatibilityRequirementsForLevel(level)
 	if err != nil {
@@ -300,8 +304,52 @@ func (c *RemoteClient) ActivateCompatibility(ctx context.Context, level uint8) e
 	if !decoded.Succeeded {
 		return errors.New("continuum: compatibility activation was rejected")
 	}
-	return nil
+	return c.waitForCompatibilityActivation(ctx, level, requirements)
 }
+
+func (c *RemoteClient) waitForCompatibilityActivation(ctx context.Context, level uint8, requirements CompatibilityRequirements) error {
+	verifyTimeout := 5 * c.client.runtime.timeout
+	if verifyTimeout < 5*time.Second {
+		verifyTimeout = 5 * time.Second
+	}
+	verifyCtx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+	var lastCheck CompatibilityCheck
+	for {
+		check, err := c.CheckCompatibility(verifyCtx, requirements)
+		lastCheck = check
+		if err == nil && check.Ready {
+			reports, reportErr := c.Compatibility(verifyCtx)
+			if reportErr == nil {
+				byID := make(map[uint64]PeerCompatibility, len(reports))
+				for _, report := range reports {
+					byID[report.ID] = report
+				}
+				confirmed := true
+				for _, id := range memberIDs(check.Membership) {
+					report, ok := byID[id]
+					if !ok || !report.Known || report.ActiveCompatibilityLevel < level || report.KVSnapshotWriteVersion != requirements.KVSnapshotWriteVersion {
+						confirmed = false
+						break
+					}
+				}
+				if confirmed {
+					return nil
+				}
+			}
+		}
+		if err := verifyCtx.Err(); err != nil {
+			return fmt.Errorf("continuum: activation committed but its required snapshot format was not confirmed on every member: %w (%d compatibility issue(s))", err, len(lastCheck.Issues))
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-verifyCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+}
+
 func (c *RemoteClient) Txn(ctx context.Context, txn Txn) (TxnResult, error) {
 	return c.client.Txn(ctx, txn)
 }

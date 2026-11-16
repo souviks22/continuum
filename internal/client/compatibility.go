@@ -76,13 +76,16 @@ func decodeCompatibility(b []byte) (Compatibility, error) {
 // RegisterCompatibilityRPC reports the local formats supported by this
 // KV-enabled node. Older binaries that lack this method return ErrUnknownMethod
 // to callers, which must treat their capabilities as unknown.
-func RegisterCompatibilityRPC(endpoint *rpc.Endpoint, machine *kv.StateMachine) error {
-	if endpoint == nil || machine == nil {
-		return errors.New("client: RegisterCompatibilityRPC requires endpoint and KV state machine")
+func RegisterCompatibilityRPC(endpoint *rpc.Endpoint, machine *kv.StateMachine, healthy func() error) error {
+	if endpoint == nil || machine == nil || healthy == nil {
+		return errors.New("client: RegisterCompatibilityRPC requires endpoint, KV state machine and health check")
 	}
 	return endpoint.Register(compatibilityMethod, func(_ string, request []byte) ([]byte, error) {
 		if len(request) != 0 {
 			return nil, errors.New("client: compatibility request must be empty")
+		}
+		if err := healthy(); err != nil {
+			return nil, err
 		}
 		return encodeCompatibility(localCompatibility(machine)), nil
 	})

@@ -51,9 +51,11 @@ The root `continuum` package has three entry points:
   `CheckCompatibility` to preflight a target, and `ActivateCompatibility` to
   commit a compatibility level after all current voters and learners pass.
   Activation is bound to the observed membership and enables newer command
-  and snapshot formats only after the committed barrier. This API is a rollout
-  primitive; mixed-version rolling upgrades still need end-to-end release
-  validation (see [upgrade safety](docs/UPGRADES.md)).
+  and snapshot formats only after the committed barrier. Lease-level activation
+  waits for every current member to persist a rollback-fenced snapshot; older
+  binaries then fail to restore that state. This API is a rollout primitive;
+  mixed-version rolling upgrades still need release-pair validation (see
+  [upgrade safety](docs/UPGRADES.md)).
 
 See [the remote client guide](docs/REMOTE_CLIENT.md) and the runnable examples
 for configuration and lifecycle details. The Go package documentation lists

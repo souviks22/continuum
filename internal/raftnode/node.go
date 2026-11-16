@@ -72,6 +72,7 @@ type Node struct {
 	applied       uint64
 	confState     *pb.ConfState
 	lastSnapIndex uint64
+	forceSnapshot bool
 
 	persistedTerm, persistedVote uint64
 
@@ -490,7 +491,9 @@ func (n *Node) handleReady(rd *raft.Ready) error {
 		}
 	}
 	n.releaseReads()
-	return n.maybeSnapshot()
+	forceSnapshot := n.forceSnapshot
+	n.forceSnapshot = false
+	return n.maybeSnapshot(forceSnapshot)
 }
 
 func (n *Node) persistInstalledSnapshot(s *pb.Snapshot) error {
@@ -613,6 +616,9 @@ func (n *Node) apply(e *pb.Entry) error {
 			} else {
 				res = n.sm.Apply(idx, cmd)
 			}
+			if trigger, ok := n.sm.(SnapshotAfterApply); ok && trigger.SnapshotAfterApply(cmd, res) {
+				n.forceSnapshot = true
+			}
 			if proposer == n.cfg.ID {
 				if w, ok := n.waiters[req]; ok {
 					delete(n.waiters, req)
@@ -643,8 +649,8 @@ func (n *Node) apply(e *pb.Entry) error {
 
 // maybeSnapshot takes a local snapshot every SnapshotEvery applied entries. The
 // order is the contract: snapshot durable first, only then is log discarded.
-func (n *Node) maybeSnapshot() error {
-	if n.applied-n.lastSnapIndex < n.cfg.SnapshotEvery {
+func (n *Node) maybeSnapshot(force bool) error {
+	if !force && n.applied-n.lastSnapIndex < n.cfg.SnapshotEvery {
 		return nil
 	}
 	data, err := n.sm.Snapshot()

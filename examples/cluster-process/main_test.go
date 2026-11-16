@@ -350,6 +350,20 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 		if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
 			t.Fatalf("read after upgrading node %d=%+v err=%v", id, got, err)
 		}
+		if id == 1 {
+			// Before activation, the N binary can still recover the N-format
+			// snapshot plus the tail written by the N+1 process.
+			stop(id)
+			start(id, legacyBin, "recover", "rollback-before-activation")
+			waitForLog(t, filepath.Join(buildDir, "node-1-rollback-before-activation.log"), "member 1 ready")
+			got, err := remote.Range(ctx, readKey, nil, continuum.RangeOptions{})
+			if err != nil || len(got.KVs) != 1 || string(got.KVs[0].Value) != "committed-by-N+1-client" {
+				t.Fatalf("read after pre-activation rollback=%+v err=%v", got, err)
+			}
+			stop(id)
+			start(id, currentBin, "recover", "upgraded-again")
+			waitForLog(t, filepath.Join(buildDir, "node-1-upgraded-again.log"), "member 1 ready")
+		}
 	}
 	check, err = remote.CheckCompatibility(ctx, requirements)
 	if err != nil || !check.Ready {
@@ -357,6 +371,32 @@ func TestMixedRevisionRollingUpgradeProcess(t *testing.T) {
 	}
 	if err := remote.ActivateCompatibility(ctx, continuum.CompatibilityLevelLeases); err != nil {
 		t.Fatalf("activation after every process runs N+1: %v", err)
+	}
+	// A rollback after activation must fail before N opens the durable state:
+	// the committed activation forces snapshot format 5 on every current member.
+	stop(1)
+	rollbackLogPath := filepath.Join(buildDir, "node-1-rollback-after-activation.log")
+	rollbackLog, err := os.Create(rollbackLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback := exec.Command(legacyBin, "serve", "1", filepath.Join(dataRoot, "node-1"), "recover")
+	rollback.Env = append(os.Environ(), helpers...)
+	rollback.Stdout, rollback.Stderr = rollbackLog, rollbackLog
+	if err := rollback.Start(); err != nil {
+		_ = rollbackLog.Close()
+		t.Fatal(err)
+	}
+	rollbackErr := rollback.Wait()
+	_ = rollbackLog.Close()
+	rollbackOutput, readErr := os.ReadFile(rollbackLogPath)
+	if rollbackErr == nil || readErr != nil || !strings.Contains(string(rollbackOutput), "unsupported snapshot version 5") {
+		t.Fatalf("post-activation N rollback err=%v readErr=%v output=%s", rollbackErr, readErr, rollbackOutput)
+	}
+	start(1, currentBin, "recover", "recovered-after-rejected-rollback")
+	waitForLog(t, filepath.Join(buildDir, "node-1-recovered-after-rejected-rollback.log"), "member 1 ready")
+	if got, err := remote.Range(ctx, []byte("mixed/after-activation"), nil, continuum.RangeOptions{}); err != nil || len(got.KVs) != 0 {
+		t.Fatalf("state after rejected downgrade=%+v err=%v", got, err)
 	}
 	if _, err := remote.Txn(ctx, continuum.Put([]byte("mixed/after-activation"), []byte("ok"))); err != nil {
 		t.Fatalf("write after activation: %v", err)

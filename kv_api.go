@@ -25,6 +25,9 @@ func (s *KVStateMachine) ApplyWithMembership(index uint64, command []byte, voter
 func (s *KVStateMachine) ValidateCommand(command []byte) error {
 	return s.machine.ValidateCommand(command)
 }
+func (s *KVStateMachine) SnapshotAfterApply(command, result []byte) bool {
+	return s.machine.SnapshotAfterApply(command, result)
+}
 func (s *KVStateMachine) Snapshot() ([]byte, error) { return s.machine.Snapshot() }
 func (s *KVStateMachine) Restore(data []byte) error { return s.machine.Restore(data) }
 func (s *KVStateMachine) LeaseCount() int           { return s.machine.LeaseCount() }
