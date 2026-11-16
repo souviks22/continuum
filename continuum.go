@@ -18,6 +18,7 @@ import (
 
 	"github.com/souviks22/continuum/internal/client"
 	"github.com/souviks22/continuum/internal/clock"
+	"github.com/souviks22/continuum/internal/dirlock"
 	"github.com/souviks22/continuum/internal/raftnode"
 	"github.com/souviks22/continuum/internal/rpc"
 	runtimeLoop "github.com/souviks22/continuum/internal/runtime"
@@ -34,6 +35,8 @@ var (
 	ErrReadTimeout      = raftnode.ErrReadTimeout
 	ErrLeaderNotReady   = raftnode.ErrLeaderNotReady
 	ErrProposalRejected = client.ErrProposalRejected
+	// ErrDataDirInUse means another Continuum node currently owns the directory.
+	ErrDataDirInUse = dirlock.ErrLocked
 )
 
 // NotLeaderError reports the known leader when a proposal reaches a follower.
@@ -83,7 +86,7 @@ type Config struct {
 	Peers            map[uint64]Peer // transport identities; voter membership is InitialVoters/ConfState
 	ListenAddr       string
 	InProcess        *InProcessNetwork
-	DataDir          string
+	DataDir          string // exclusively locked by Open until Node.Close
 	StateMachine     StateMachine
 	Bootstrap        bool
 	BootstrapLearner bool
@@ -146,6 +149,7 @@ type Node struct {
 	closeErr      error
 	clusterMu     sync.Mutex
 	clusterPeers  map[*embeddedPeer]struct{}
+	dataDirLock   interface{ Close() error }
 }
 
 func Open(cfg Config) (*Node, error) {
@@ -192,6 +196,16 @@ func Open(cfg Config) (*Node, error) {
 		}
 		raftPeers[id] = p.Name
 	}
+	dataDirLock, err := dirlock.Acquire(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("continuum: acquire data directory: %w", err)
+	}
+	keepDataDirLock := false
+	defer func() {
+		if !keepDataDirLock {
+			_ = dataDirLock.Close()
+		}
+	}()
 	local := cfg.Peers[cfg.ID]
 	loop, err := runtimeLoop.NewLoop(cfg.QueueSize)
 	if err != nil {
@@ -305,7 +319,8 @@ func Open(cfg Config) (*Node, error) {
 	for id, peer := range cfg.Peers {
 		peerNames[id] = peer.Name
 	}
-	return &Node{raw: raw, id: cfg.ID, kvMachine: kvMachine, kvClient: kvClient, loop: loop, clock: serialClock, closer: transportCloser, endpointClose: endpoint.Close, endpoint: endpoint, peerNames: peerNames, addr: nodeAddr, timeout: cfg.ProposalTimeout, closeDone: make(chan struct{})}, nil
+	keepDataDirLock = true
+	return &Node{raw: raw, id: cfg.ID, kvMachine: kvMachine, kvClient: kvClient, loop: loop, clock: serialClock, closer: transportCloser, endpointClose: endpoint.Close, endpoint: endpoint, peerNames: peerNames, addr: nodeAddr, timeout: cfg.ProposalTimeout, closeDone: make(chan struct{}), dataDirLock: dataDirLock}, nil
 }
 
 // Propose submits one command. If the context expires after Raft accepted it,
@@ -480,7 +495,7 @@ func (n *Node) Close() error {
 		}
 		transportErr := n.closer.Close()
 		n.loop.Close()
-		n.closeErr = transportErr
+		n.closeErr = errors.Join(transportErr, n.dataDirLock.Close())
 		close(n.closeDone)
 	})
 	<-n.closeDone

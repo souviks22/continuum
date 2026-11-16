@@ -18,6 +18,64 @@ func (m *testMachine) Apply(_ uint64, command []byte) []byte {
 	return []byte("ok:" + m.value)
 }
 
+func TestOpenExclusivelyLocksDataDirectoryAndReleasesOnClose(t *testing.T) {
+	network := continuum.NewInProcessNetwork()
+	dir := t.TempDir()
+	config := continuum.Config{
+		ID: 1, Peers: map[uint64]continuum.Peer{1: {Name: "exclusive-node"}},
+		InProcess: network, DataDir: dir, StateMachine: continuum.NewKVStateMachine(),
+		Bootstrap: true, InitialVoters: []uint64{1},
+		TickInterval: 10 * time.Millisecond, ElectionTick: 3, HeartbeatTick: 1,
+	}
+	first, err := continuum.Open(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := continuum.Open(config); !errors.Is(err, continuum.ErrDataDirInUse) {
+		t.Fatalf("second open error=%v, want ErrDataDirInUse", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config.Bootstrap = false
+	config.StateMachine = continuum.NewKVStateMachine()
+	reopened, err := continuum.Open(config)
+	if err != nil {
+		t.Fatalf("reopen after close: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenReleasesDataDirectoryLockAfterStartupFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	dir := t.TempDir()
+	config := continuum.Config{
+		ID: 1, Peers: map[uint64]continuum.Peer{1: {Name: "startup-failure", Address: addr}},
+		ListenAddr: addr, DataDir: dir, StateMachine: continuum.NewKVStateMachine(),
+		Bootstrap: true, InitialVoters: []uint64{1}, InsecureLocal: true,
+	}
+	if _, err := continuum.Open(config); err == nil {
+		t.Fatal("Open succeeded while its listen address was occupied")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	node, err := continuum.Open(config)
+	if err != nil {
+		t.Fatalf("Open after releasing failed startup lock: %v", err)
+	}
+	if err := node.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublicMembershipReplacementFlow(t *testing.T) {
 	network := continuum.NewInProcessNetwork()
 	peers := map[uint64]continuum.Peer{

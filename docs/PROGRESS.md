@@ -109,7 +109,10 @@ Known limitations, stated plainly:
   auto-repaired. `Mem` does not model block reordering, bit rot or misdirected
   writes.
 - `Reset` is not atomic (documented; callers persist their intent first).
-- No directory lock: two processes opening one WAL directory is not prevented.
+- The public `continuum.Open` API holds a non-blocking OS lock on the data
+  directory until `Node.Close`; direct internal Raft-node use is outside that
+  public ownership guard. The lock file is persistent and must not be removed
+  while its node is running.
 - `Read` rescans a segment from its start, and recovery is O(log size)
   (about 16 ms for 200k x 128 B records on the sandbox). Fine for now; add a
   sparse index when Raft follower catch-up needs it.

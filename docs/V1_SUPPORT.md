@@ -24,9 +24,10 @@ cross-shard transactions, multi-tenancy, or multi-language clients.
 - Embedded transport for nodes in one process, or TCP for separate processes.
   Remote TCP deployments should use TLS/mTLS. Plaintext with
   `InsecureLocal` is for trusted local development and tests only.
-- Each node must have exclusive use of its data directory. The current storage
-  layer does not enforce this with a process lock, so deployments must prevent
-  two processes from opening the same directory.
+- Each node must have exclusive use of its data directory. `Open` obtains a
+  non-blocking advisory OS lock and returns `ErrDataDirInUse` if another
+  Continuum node already owns that directory. The persistent lock file must not
+  be removed manually while a node is running.
 
 ## Data and limits
 
@@ -55,8 +56,6 @@ procedure. Do not infer compatibility for an unlisted pair.
 
 ## Blockers before this becomes an effective contract
 
-- Enforce exclusive data-directory ownership or provide an equally reliable
-  guard against concurrent opens.
 - Complete and document the initial supported upgrade path and its release-pair
   compatibility evidence.
 - Add automated CI for the supported Go version and Linux target, including
