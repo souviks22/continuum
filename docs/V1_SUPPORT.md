@@ -59,8 +59,8 @@ procedure. Do not infer compatibility for an unlisted pair.
 - Rerun the preview-to-stable upgrade matrix against the exact immutable v1
   release candidate and publish the tested pair as the only supported upgrade
   path until more release pairs pass the same matrix.
-- Add automated CI for the supported Go version and Linux target, including
-  race tests and `go vet`.
+- Get a successful hosted CI run for the supported Go version and Linux target,
+  including formatting, race tests and `go vet`.
 - Publish tested dataset, retention, and performance limits, or keep the v1
   claim narrowly scoped to small coordination workloads without numeric service
   guarantees.
